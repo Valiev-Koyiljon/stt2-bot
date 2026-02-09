@@ -14,11 +14,16 @@ A Telegram bot that accepts voice/audio messages, converts them to 16 kHz mono W
 - `ffmpeg` available in PATH (or set `FFMPEG_PATH`)
 
 ## Setup
-1. Install dependencies:
+1. Create and activate a virtual environment (recommended):
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   ```
+2. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-2. Create a `.env` file (copy from `.env.example`) and fill values:
+3. Create a `.env` file (copy from `.env.example`) and fill values:
    ```bash
    cp .env.example .env
    ```

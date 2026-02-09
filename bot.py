@@ -12,7 +12,7 @@ from typing import Iterable
 import requests
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
@@ -32,6 +32,7 @@ API_PORT = int(os.getenv("API_PORT", "8000"))
 RECENT_LIMIT = int(os.getenv("RECENT_LIMIT", "100"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 WEBHOOK_TIMEOUT = float(os.getenv("WEBHOOK_TIMEOUT", "10"))
+API_ACCESS_KEY = os.getenv("API_ACCESS_KEY", "").strip()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,13 +49,21 @@ class ProcessingError(RuntimeError):
     pass
 
 
+def require_api_key(request: Request) -> None:
+    if not API_ACCESS_KEY:
+        return
+    header_key = request.headers.get("X-API-Key", "")
+    if header_key != API_ACCESS_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 @api_app.get("/health")
-def health() -> dict:
+def health(_: None = Depends(require_api_key)) -> dict:
     return {"status": "ok"}
 
 
 @api_app.get("/last")
-def last_transcript() -> dict:
+def last_transcript(_: None = Depends(require_api_key)) -> dict:
     with TRANSCRIPTS_LOCK:
         if not RECENT_TRANSCRIPTS:
             return {"item": None}
@@ -62,7 +71,7 @@ def last_transcript() -> dict:
 
 
 @api_app.get("/recent")
-def recent_transcripts() -> dict:
+def recent_transcripts(_: None = Depends(require_api_key)) -> dict:
     with TRANSCRIPTS_LOCK:
         return {"items": list(RECENT_TRANSCRIPTS)}
 

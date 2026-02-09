@@ -75,6 +75,8 @@ Endpoints:
 - `GET /last` -> `{ "item": { "username", "user_id", "text", "timestamp" } }`
 - `GET /recent` -> `{ "items": [ ... ] }`
 
+If you set `API_ACCESS_KEY`, all API endpoints require the `X-API-Key` header.
+
 ## Webhook (optional)
 Set `WEBHOOK_URL` to receive a JSON payload for each transcript:
 ```json
@@ -105,6 +107,7 @@ All settings live in `.env`:
 - `API_HOST`: API bind host (default `0.0.0.0`)
 - `API_PORT`: API port inside container (default `8000`)
 - `RECENT_LIMIT`: max number of transcripts in memory
+- `API_ACCESS_KEY`: protect API endpoints using `X-API-Key`
 - `WEBHOOK_URL`: optional webhook endpoint for transcript payloads
 - `WEBHOOK_TIMEOUT`: webhook timeout in seconds
 

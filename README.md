@@ -13,6 +13,22 @@ A Telegram bot that accepts voice/audio messages, converts them to 16 kHz mono W
 - Python
 - `ffmpeg` available in PATH (or set `FFMPEG_PATH`)
 
+## Install ffmpeg
+macOS (Homebrew):
+```bash
+brew install ffmpeg
+```
+
+Ubuntu/Debian:
+```bash
+sudo apt-get update
+sudo apt-get install -y ffmpeg
+```
+
+Windows:
+1. Download from https://ffmpeg.org/download.html
+2. Extract and add the `bin` folder to your PATH
+
 ## Setup
 1. Create and activate a virtual environment (recommended):
    ```bash

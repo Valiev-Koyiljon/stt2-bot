@@ -3,11 +3,16 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 import requests
+import uvicorn
 from dotenv import load_dotenv
+from fastapi import FastAPI
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
@@ -20,6 +25,13 @@ ASR_API_KEY = os.getenv("ASR_API_KEY", "aifirstm")
 ASR_LANG = os.getenv("ASR_LANG", "uz")
 CHUNK_SECONDS = int(os.getenv("ASR_CHUNK_SECONDS", "30"))
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
+
+API_HOST = os.getenv("API_HOST", "0.0.0.0")
+API_PORT = int(os.getenv("API_PORT", "8000"))
+RECENT_LIMIT = int(os.getenv("RECENT_LIMIT", "100"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+WEBHOOK_TIMEOUT = float(os.getenv("WEBHOOK_TIMEOUT", "10"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,9 +39,32 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("telegram-asr-bot")
 
+api_app = FastAPI(title="Telegram ASR Bot API")
+RECENT_TRANSCRIPTS: deque[dict] = deque(maxlen=RECENT_LIMIT)
+TRANSCRIPTS_LOCK = threading.Lock()
+
 
 class ProcessingError(RuntimeError):
     pass
+
+
+@api_app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@api_app.get("/last")
+def last_transcript() -> dict:
+    with TRANSCRIPTS_LOCK:
+        if not RECENT_TRANSCRIPTS:
+            return {"item": None}
+        return {"item": RECENT_TRANSCRIPTS[-1]}
+
+
+@api_app.get("/recent")
+def recent_transcripts() -> dict:
+    with TRANSCRIPTS_LOCK:
+        return {"items": list(RECENT_TRANSCRIPTS)}
 
 
 def run_ffmpeg(args: list[str]) -> None:
@@ -148,10 +183,39 @@ def pick_attachment(update: Update):
     return None
 
 
+def record_transcript(message, text: str) -> dict:
+    user = message.from_user
+    payload = {
+        "username": user.username or "",
+        "user_id": user.id,
+        "text": text,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    with TRANSCRIPTS_LOCK:
+        RECENT_TRANSCRIPTS.append(payload)
+    return payload
+
+
+def post_webhook(payload: dict) -> None:
+    if not WEBHOOK_URL:
+        return
+    try:
+        response = requests.post(WEBHOOK_URL, json=payload, timeout=WEBHOOK_TIMEOUT)
+        response.raise_for_status()
+    except Exception:
+        LOGGER.exception("Webhook delivery failed")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Send me a voice or audio file. I will split it into 30-second WAV chunks and transcribe it."
     )
+
+
+async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await update.message.reply_text(f"Your chat ID: {update.message.chat_id}")
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -177,7 +241,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             tg_file = await attachment.get_file()
             suffix = Path(tg_file.file_path or "audio").suffix
             input_path = tmp_path / f"input{suffix or '.dat'}"
-            wav_path = tmp_path / "input.wav"
+            wav_path = tmp_path / "converted.wav"
             chunks_dir = tmp_path / "chunks"
 
             await tg_file.download_to_drive(custom_path=str(input_path))
@@ -201,8 +265,13 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             if not full_text:
                 full_text = "No text returned by ASR service."
 
+            payload = record_transcript(message, full_text)
+            await asyncio.to_thread(post_webhook, payload)
+
             for part in split_message(full_text):
                 await message.reply_text(part)
+                if ADMIN_CHAT_ID and str(message.chat_id) != ADMIN_CHAT_ID:
+                    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=part)
 
     except requests.HTTPError as exc:
         LOGGER.exception("ASR API error")
@@ -220,16 +289,25 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 def build_application() -> Application:
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
-    return (
-        Application.builder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .build()
+    return Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+
+def start_api_thread() -> None:
+    thread = threading.Thread(
+        target=uvicorn.run,
+        args=(api_app,),
+        kwargs={"host": API_HOST, "port": API_PORT, "log_level": "info"},
+        daemon=True,
     )
+    thread.start()
+    LOGGER.info("API server running on http://%s:%s", API_HOST, API_PORT)
 
 
 def main() -> None:
+    start_api_thread()
     app = build_application()
     app.add_handler(CommandHandler(["start", "help"], start))
+    app.add_handler(CommandHandler("id", show_id))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

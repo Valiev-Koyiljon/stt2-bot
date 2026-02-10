@@ -62,6 +62,8 @@ class ContextData(BaseModel):
     msisdn: Optional[str] = None
     platform: str = "telegram"
     language: str = "uz"
+    username: Optional[str] = None
+    user_id: Optional[Union[int, str]] = None
 
 class ConversationRequest(BaseModel):
     session_id: str
@@ -109,6 +111,8 @@ def store_message(
     platform: str,
     language: str,
     msisdn: Optional[str] = None,
+    username: Optional[str] = None,
+    user_id: Optional[Union[int, str]] = None,
 ) -> dict:
     payload = {
         "session_id": session_id,
@@ -117,6 +121,8 @@ def store_message(
         "platform": platform,
         "language": language,
         "msisdn": msisdn,
+        "username": username,
+        "user_id": user_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     with TRANSCRIPTS_LOCK:
@@ -165,7 +171,9 @@ def handle_conversation(
         content=content,
         platform=platform,
         language=language,
-        msisdn=msisdn
+        msisdn=msisdn,
+        username=normalized_request.context.username,
+        user_id=normalized_request.context.user_id,
     )
 
     # 5. Process Business Logic
@@ -303,7 +311,9 @@ def record_transcript(message, text: str) -> dict:
         content=text,
         platform="telegram",
         language=ASR_LANG,
-        msisdn=None, # MSISDN not usually available from TG user directly without contact share
+        msisdn=None, 
+        username=user.username,
+        user_id=user.id,
     )
 
 
@@ -330,6 +340,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         platform="telegram",
         language=ASR_LANG,  # Default or infer if possible
         msisdn=None,
+        username=message.from_user.username,
+        user_id=message.from_user.id,
     )
 
     # Process business logic (reply)

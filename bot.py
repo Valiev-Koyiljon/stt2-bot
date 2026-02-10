@@ -9,10 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from typing import Iterable, Union, Literal, Optional
+from pydantic import BaseModel, Field
+
 import requests
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Body
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
@@ -49,6 +52,29 @@ class ProcessingError(RuntimeError):
     pass
 
 
+# --- New Data Models ---
+
+class InputData(BaseModel):
+    type: Literal["text", "voice"]
+    content: str
+
+class ContextData(BaseModel):
+    msisdn: Optional[str] = None
+    platform: str = "telegram"
+    language: str = "uz"
+
+class ConversationRequest(BaseModel):
+    session_id: str
+    input: InputData
+    context: ContextData
+
+class LegacyRequest(BaseModel):
+    message: str
+
+
+# --- API Logic ---
+
+
 def require_api_key(request: Request) -> None:
     if not API_ACCESS_KEY:
         return
@@ -74,6 +100,82 @@ def last_transcript(_: None = Depends(require_api_key)) -> dict:
 def recent_transcripts(_: None = Depends(require_api_key)) -> dict:
     with TRANSCRIPTS_LOCK:
         return {"items": list(RECENT_TRANSCRIPTS)}
+
+
+def store_message(
+    session_id: str,
+    message_type: str,
+    content: str,
+    platform: str,
+    language: str,
+    msisdn: Optional[str] = None,
+) -> dict:
+    payload = {
+        "session_id": session_id,
+        "message_type": message_type,
+        "content": content,
+        "platform": platform,
+        "language": language,
+        "msisdn": msisdn,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    with TRANSCRIPTS_LOCK:
+        RECENT_TRANSCRIPTS.append(payload)
+    return payload
+
+
+def process_business_logic(content: str) -> str:
+    # Placeholder for actual business logic
+    # In a real scenario, this might call another service or AI model
+    return f"Processed: {content}"
+
+
+@api_app.post("/conversation")
+def handle_conversation(
+    request_data: Union[ConversationRequest, LegacyRequest] = Body(...),
+    _: None = Depends(require_api_key)
+) -> dict:
+    # 1. Backward Compatibility Mapping
+    if isinstance(request_data, LegacyRequest):
+        LOGGER.warning("Deprecated legacy request format received: {'message': ...}")
+        normalized_request = ConversationRequest(
+            session_id=f"legacy-{datetime.now().timestamp()}",
+            input=InputData(type="voice", content=request_data.message),
+            context=ContextData()
+        )
+    else:
+        normalized_request = request_data
+
+    # 2. Extract Data
+    session_id = normalized_request.session_id
+    msg_type = normalized_request.input.type
+    content = normalized_request.input.content
+    platform = normalized_request.context.platform
+    language = normalized_request.context.language
+    msisdn = normalized_request.context.msisdn
+
+    # 3. Validation Logic (Already handled by Pydantic, but can add more)
+    if not content:
+        raise HTTPException(status_code=400, detail="Content cannot be empty")
+
+    # 4. Store Message
+    store_message(
+        session_id=session_id,
+        message_type=msg_type,
+        content=content,
+        platform=platform,
+        language=language,
+        msisdn=msisdn
+    )
+
+    # 5. Process Business Logic
+    reply = process_business_logic(content)
+
+    # 6. Return Response
+    return {
+        "session_id": session_id,
+        "reply": reply
+    }
 
 
 def run_ffmpeg(args: list[str]) -> None:
@@ -194,15 +296,15 @@ def pick_attachment(update: Update):
 
 def record_transcript(message, text: str) -> dict:
     user = message.from_user
-    payload = {
-        "username": user.username or "",
-        "user_id": user.id,
-        "text": text,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    with TRANSCRIPTS_LOCK:
-        RECENT_TRANSCRIPTS.append(payload)
-    return payload
+    # Use the unified store_message for consistency
+    return store_message(
+        session_id=f"tg-{message.chat_id}-{datetime.now().timestamp()}",
+        message_type="voice",  # Bot handles audio/voice
+        content=text,
+        platform="telegram",
+        language=ASR_LANG,
+        msisdn=None, # MSISDN not usually available from TG user directly without contact share
+    )
 
 
 def post_webhook(payload: dict) -> None:

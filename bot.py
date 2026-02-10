@@ -317,6 +317,31 @@ def post_webhook(payload: dict) -> None:
         LOGGER.exception("Webhook delivery failed")
 
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if not message or not message.text:
+        return
+
+    # Store text message using the unified schema
+    payload = store_message(
+        session_id=f"tg-{message.chat_id}-{datetime.now().timestamp()}",
+        message_type="text",
+        content=message.text,
+        platform="telegram",
+        language=ASR_LANG,  # Default or infer if possible
+        msisdn=None,
+    )
+
+    # Process business logic (reply)
+    reply = process_business_logic(message.text)
+    
+    # Send reply back to user
+    await message.reply_text(reply)
+
+    # Webhook
+    await asyncio.to_thread(post_webhook, payload)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Send me a voice or audio file. I will split it into 30-second WAV chunks and transcribe it."
@@ -420,6 +445,7 @@ def main() -> None:
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("id", show_id))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

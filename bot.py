@@ -32,6 +32,8 @@ ASR_API_KEY = os.getenv("ASR_API_KEY", "")
 CHUNK_SECONDS = int(os.getenv("ASR_CHUNK_SECONDS", "30"))
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
+AI_CORE_URL = os.getenv("AI_CORE_URL", "http://185.100.53.247:8075/chat")
+AI_CORE_TIMEOUT = int(os.getenv("AI_CORE_TIMEOUT", "30"))
 
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
@@ -49,10 +51,17 @@ LOGGER = logging.getLogger("telegram-asr-bot")
 api_app = FastAPI(title="Telegram ASR Bot API")
 RECENT_TRANSCRIPTS: deque[dict] = deque(maxlen=RECENT_LIMIT)
 TRANSCRIPTS_LOCK = threading.Lock()
+CHAT_SESSIONS: dict[int, str] = {}
 
 
 class ProcessingError(RuntimeError):
     pass
+
+
+def get_session_id(chat_id: int) -> str:
+    if chat_id not in CHAT_SESSIONS:
+        CHAT_SESSIONS[chat_id] = f"tg-{chat_id}"
+    return CHAT_SESSIONS[chat_id]
 
 
 # --- New Data Models ---
@@ -133,10 +142,43 @@ def store_message(
     return payload
 
 
-def process_business_logic(content: str) -> str:
-    # Placeholder for actual business logic
-    # In a real scenario, this might call another service or AI model
-    return f"Processed: {content}"
+def call_ai_core(message: str, session_id: str, channel: str = "text", language_hint: str = "uz") -> dict:
+    payload = {
+        "message": message,
+        "session_id": session_id,
+        "context": {
+            "msisdn": None,
+            "channel": channel,
+            "language_hint": language_hint,
+        },
+    }
+    LOGGER.info("AI Core request: session=%s, channel=%s, msg=%s", session_id, channel, message[:100])
+    response = requests.post(AI_CORE_URL, json=payload, timeout=AI_CORE_TIMEOUT)
+    response.raise_for_status()
+    data = response.json()
+    LOGGER.info(
+        "AI Core response: model=%s, latency=%sms, tools=%s",
+        data.get("model_used", "?"),
+        data.get("latency_ms", "?"),
+        data.get("tool_calls_made", []),
+    )
+    return data
+
+
+def format_ai_response(ai_data: dict) -> str:
+    parts = []
+    response_obj = ai_data.get("response", {})
+    text = response_obj.get("text", "").strip()
+    if text:
+        parts.append(text)
+    tool_calls = ai_data.get("tool_calls_made", [])
+    if tool_calls:
+        parts.append(f"\n\U0001f527 Tools: {', '.join(tool_calls)}")
+    latency_ms = ai_data.get("latency_ms")
+    model_used = ai_data.get("model_used", "")
+    if latency_ms is not None:
+        parts.append(f"\u23f1 {latency_ms}ms | {model_used}")
+    return "\n".join(parts) if parts else "No response from AI."
 
 
 @api_app.post("/conversation")
@@ -179,13 +221,26 @@ def handle_conversation(
         user_id=normalized_request.context.user_id,
     )
 
-    # 5. Process Business Logic
-    reply = process_business_logic(content)
+    # 5. Call AI Core Engine
+    ai_core_response = None
+    try:
+        ai_data = call_ai_core(
+            message=content,
+            session_id=session_id,
+            channel="voice" if msg_type == "voice" else "text",
+            language_hint=language,
+        )
+        reply = ai_data.get("response", {}).get("text", "")
+        ai_core_response = ai_data
+    except Exception as exc:
+        LOGGER.exception("AI Core Engine call failed in /conversation")
+        reply = f"AI service error: {exc}"
 
     # 6. Return Response
     return {
         "session_id": session_id,
-        "reply": reply
+        "reply": reply,
+        "ai_core_response": ai_core_response,
     }
 
 
@@ -335,9 +390,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not message or not message.text:
         return
 
-    # Store text message using the unified schema
+    session_id = get_session_id(message.chat_id)
+
     payload = store_message(
-        session_id=f"tg-{message.chat_id}-{datetime.now().timestamp()}",
+        session_id=session_id,
         message_type="text",
         content=message.text,
         platform="telegram",
@@ -347,19 +403,52 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         user_id=message.from_user.id,
     )
 
-    # Process business logic (reply)
-    reply = process_business_logic(message.text)
-    
-    # Send reply back to user
-    await message.reply_text(reply)
+    await message.chat.send_action(ChatAction.TYPING)
+    status_message = await message.reply_text("\U0001f914 Thinking...")
 
-    # Webhook
+    try:
+        ai_data = await asyncio.to_thread(
+            call_ai_core, message.text, session_id, channel="text", language_hint="uz",
+        )
+
+        tool_calls = ai_data.get("tool_calls_made", [])
+        if tool_calls:
+            await status_message.edit_text(f"\U0001f527 Using tools: {', '.join(tool_calls)}")
+            await asyncio.sleep(0.5)
+
+        reply_text = format_ai_response(ai_data)
+        for part in split_message(reply_text):
+            await message.reply_text(part)
+            if ADMIN_CHAT_ID and str(message.chat_id) != ADMIN_CHAT_ID:
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=part)
+
+    except requests.ConnectionError:
+        LOGGER.exception("AI Core Engine connection failed")
+        await message.reply_text("\u26a0\ufe0f AI service is currently unavailable. Please try again later.")
+    except requests.Timeout:
+        LOGGER.exception("AI Core Engine timed out")
+        await message.reply_text("\u26a0\ufe0f AI service timed out. Please try again.")
+    except requests.HTTPError as exc:
+        LOGGER.exception("AI Core Engine HTTP error")
+        await message.reply_text(f"\u26a0\ufe0f AI service error: {exc.response.status_code}")
+    except Exception as exc:
+        LOGGER.exception("Error calling AI Core Engine")
+        await message.reply_text(f"\u26a0\ufe0f Processing failed: {exc}")
+    finally:
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
+
     await asyncio.to_thread(post_webhook, payload)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Send me a voice or audio file. I will split it into 30-second WAV chunks and transcribe it."
+        "Send me a voice or text message. I will transcribe voice and respond using AI.\n\n"
+        "Commands:\n"
+        "/start - Show this help\n"
+        "/id - Show your chat ID"
     )
 
 
@@ -419,21 +508,49 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             payload = record_transcript(message, full_text)
             await asyncio.to_thread(post_webhook, payload)
 
-            for part in split_message(full_text):
+            for part in split_message(f"\U0001f4dd Transcript:\n{full_text}"):
                 await message.reply_text(part)
-                if ADMIN_CHAT_ID and str(message.chat_id) != ADMIN_CHAT_ID:
-                    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=part)
+
+            # Call AI Core Engine with the transcribed text
+            session_id = get_session_id(message.chat_id)
+            await status_message.edit_text("\U0001f914 Thinking...")
+
+            try:
+                ai_data = await asyncio.to_thread(
+                    call_ai_core, full_text, session_id, channel="voice", language_hint="uz",
+                )
+
+                tool_calls = ai_data.get("tool_calls_made", [])
+                if tool_calls:
+                    await status_message.edit_text(f"\U0001f527 Using tools: {', '.join(tool_calls)}")
+                    await asyncio.sleep(0.5)
+
+                reply_text = format_ai_response(ai_data)
+                for part in split_message(reply_text):
+                    await message.reply_text(part)
+                    if ADMIN_CHAT_ID and str(message.chat_id) != ADMIN_CHAT_ID:
+                        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=part)
+
+            except requests.ConnectionError:
+                LOGGER.exception("AI Core Engine connection failed")
+                await message.reply_text("\u26a0\ufe0f AI service unavailable. Transcript was saved.")
+            except requests.Timeout:
+                LOGGER.exception("AI Core Engine timed out")
+                await message.reply_text("\u26a0\ufe0f AI service timed out. Transcript was saved.")
+            except Exception as exc:
+                LOGGER.exception("AI Core processing failed")
+                await message.reply_text(f"\u26a0\ufe0f AI processing failed: {exc}. Transcript was saved.")
 
     except requests.HTTPError as exc:
         LOGGER.exception("ASR API error")
         await message.reply_text(f"ASR API error: {exc}")
-    except Exception as exc:  # pylint: disable=broad-except
+    except Exception as exc:
         LOGGER.exception("Processing error")
         await message.reply_text(f"Processing failed: {exc}")
     finally:
         try:
             await status_message.delete()
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             pass
 
 

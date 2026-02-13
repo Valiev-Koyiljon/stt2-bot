@@ -1,16 +1,29 @@
 # Telegram ASR Bot
 
-A Telegram bot that accepts voice/audio messages, converts them to 16 kHz mono WAV, splits audio into 30‑second chunks, sends each chunk to your ASR API, and replies with the combined transcription. It also exposes a small HTTP API for the most recent transcripts (no database).
+A Telegram bot that accepts voice/audio messages, converts them to 16 kHz mono WAV, splits audio into 30-second chunks, sends each chunk to your ASR API, and replies with the combined transcription. It also exposes a small HTTP API for the most recent transcripts (no database).
 
 ## Features
 - Accepts voice notes and audio files
 - Converts to WAV (mono, 16 kHz)
-- Splits into 30‑second chunks
-- Calls ASR API with `X-API-Key` + `language`
+- Splits into 30-second chunks
+- Calls ASR API with `X-API-Key` header
+- Auto-detects language (no `language` param needed, API handles it)
 - Replies with the final transcript
 - Optional admin copy of every transcript
 - HTTP API for recent transcripts
 - Optional webhook callback per transcript
+
+## ASR API Latency Benchmarks
+
+Tested against `185.100.53.247:18000/asr` (synthetic sine-wave audio, 3 runs each):
+
+| Audio Duration | Avg Latency | Min    | Max    |
+|---------------|-------------|--------|--------|
+| 1 second      | ~130ms      | 123ms  | 135ms  |
+| 5 seconds     | ~464ms      | 457ms  | 476ms  |
+| 30 seconds    | ~936ms      | 904ms  | 1000ms |
+
+> Benchmarked on 2026-02-13 from local machine. Real-world latency may vary with speech content, network conditions, and server load.
 
 ## Requirements
 - Python
@@ -68,12 +81,13 @@ To get your chat ID, send `/id` to the bot. If you set `ADMIN_CHAT_ID` in `.env`
 the bot will send every transcript to you as well as the user.
 
 ## API
-The API keeps a small in‑memory list of the most recent transcripts. Data is lost on restart.
+The API keeps a small in-memory list of the most recent transcripts. Data is lost on restart.
 
 Endpoints:
 - `GET /health` -> `{ "status": "ok" }`
-- `GET /last` -> `{ "item": { "username", "user_id", "text", "timestamp" } }`
+- `GET /last` -> `{ "item": { "session_id", "message_type", "content", "platform", "language", "username", "user_id", "timestamp" } }`
 - `GET /recent` -> `{ "items": [ ... ] }`
+- `POST /conversation` -> accepts `ConversationRequest` or legacy `{ "message": "..." }` format
 
 If you set `API_ACCESS_KEY`, all API endpoints require the `X-API-Key` header.
 
@@ -81,9 +95,13 @@ If you set `API_ACCESS_KEY`, all API endpoints require the `X-API-Key` header.
 Set `WEBHOOK_URL` to receive a JSON payload for each transcript:
 ```json
 {
+  "session_id": "tg-123456-1707500000.0",
+  "message_type": "voice",
+  "content": "transcribed text...",
+  "platform": "telegram",
+  "language": "auto",
   "username": "john",
   "user_id": 123456789,
-  "text": "...",
   "timestamp": "2026-02-09T12:34:56+00:00"
 }
 ```
@@ -98,9 +116,8 @@ In Coolify, set your environment variables and deploy the compose file.
 ## Configuration
 All settings live in `.env`:
 - `TELEGRAM_BOT_TOKEN`: your bot token
-- `ASR_API_URL`: ASR endpoint (default set in `.env.example`)
+- `ASR_API_URL`: ASR endpoint (default `http://185.100.53.247:18000/asr`)
 - `ASR_API_KEY`: API key passed in `X-API-Key`
-- `ASR_LANG`: language code (e.g., `uz`)
 - `ASR_CHUNK_SECONDS`: chunk length (default 30)
 - `FFMPEG_PATH`: path to `ffmpeg` if not in PATH
 - `ADMIN_CHAT_ID`: your Telegram chat ID for receiving copies of transcripts

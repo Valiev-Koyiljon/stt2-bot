@@ -29,7 +29,9 @@ ASR_API_URL = os.getenv(
     "http://185.100.53.247:18000/asr"
 )
 ASR_API_KEY = os.getenv("ASR_API_KEY", "")
-ASR_LANG = os.getenv("ASR_LANG", "auto")
+# ASR_LANG = os.getenv("ASR_LANG", "")
+ROUTE_AUTO_DETECT = os.getenv("ROUTE_AUTO_DETECT", "true").lower() == "true"
+AUTO_LANG_RETRY_LANGS = os.getenv("AUTO_LANG_RETRY_LANGS", "uz,ru")
 CHUNK_SECONDS = int(os.getenv("ASR_CHUNK_SECONDS", "30"))
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
@@ -264,7 +266,10 @@ def transcribe_chunk(chunk_path: Path) -> str:
         response = requests.post(
             ASR_API_URL,
             files={"audio": audio_file},
-            data={"language": ASR_LANG},
+            data={
+                "route_auto_detect": str(ROUTE_AUTO_DETECT).lower(),
+                "auto_lang_retry_langs": AUTO_LANG_RETRY_LANGS,
+            },
             headers=headers,
             timeout=60,
         )
@@ -314,8 +319,8 @@ def record_transcript(message, text: str) -> dict:
         message_type="voice",  # Bot handles audio/voice
         content=text,
         platform="telegram",
-        language=ASR_LANG,
-        msisdn=None, 
+        language="auto",
+        msisdn=None,
         username=user.username,
         user_id=user.id,
     )
@@ -342,7 +347,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         message_type="text",
         content=message.text,
         platform="telegram",
-        language=ASR_LANG,  # Default or infer if possible
+        language="auto",
         msisdn=None,
         username=message.from_user.username,
         user_id=message.from_user.id,

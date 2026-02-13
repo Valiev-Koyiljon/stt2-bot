@@ -23,10 +23,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-
+# ASR_API_URL = os.getenv("ASR_API_URL", "http://185.100.53.247:7190/asr")
 ASR_API_URL = os.getenv(
     "ASR_API_URL",
-    "http://185.100.53.247:18000/v1/audio/transcriptions"
+    "http://185.100.53.247:18000/asr"
 )
 ASR_API_KEY = os.getenv("ASR_API_KEY", "")
 ASR_LANG = os.getenv("ASR_LANG", "uz")

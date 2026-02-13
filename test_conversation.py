@@ -21,6 +21,7 @@ def test_new_format_text():
             "language": "uz"
         }
     }
+    
     resp = requests.post(f"{BASE_URL}/conversation", json=payload)
     print(f"Status: {resp.status_code}")
     print(f"Response: {resp.json()}")

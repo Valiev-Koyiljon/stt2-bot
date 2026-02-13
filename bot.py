@@ -29,7 +29,7 @@ ASR_API_URL = os.getenv(
     "http://185.100.53.247:18000/asr"
 )
 ASR_API_KEY = os.getenv("ASR_API_KEY", "")
-ASR_LANG = os.getenv("ASR_LANG", "uz")
+ASR_LANG = os.getenv("ASR_LANG", "auto")
 CHUNK_SECONDS = int(os.getenv("ASR_CHUNK_SECONDS", "30"))
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()

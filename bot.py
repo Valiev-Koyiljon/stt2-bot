@@ -16,9 +16,9 @@ import requests
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, Body
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 load_dotenv()
 
@@ -52,6 +52,7 @@ api_app = FastAPI(title="Telegram ASR Bot API")
 RECENT_TRANSCRIPTS: deque[dict] = deque(maxlen=RECENT_LIMIT)
 TRANSCRIPTS_LOCK = threading.Lock()
 CHAT_SESSIONS: dict[int, str] = {}
+USER_LANGUAGES: dict[int, str] = {}  # chat_id -> "uz" or "ru"
 
 
 class ProcessingError(RuntimeError):
@@ -312,13 +313,14 @@ def extract_text(payload: object) -> str:
     return str(payload).strip()
 
 
-def transcribe_chunk(chunk_path: Path) -> str:
+def transcribe_chunk(chunk_path: Path, language: str = "") -> str:
     headers = {"X-API-Key": ASR_API_KEY} if ASR_API_KEY else {}
+    data = {"language": language} if language else {}
     with chunk_path.open("rb") as audio_file:
         response = requests.post(
             ASR_API_URL,
             files={"audio": audio_file},
-            data={},
+            data=data,
             headers=headers,
             timeout=60,
         )
@@ -407,8 +409,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     status_message = await message.reply_text("\U0001f914 Thinking...")
 
     try:
+        user_lang = USER_LANGUAGES.get(message.chat_id, "uz")
         ai_data = await asyncio.to_thread(
-            call_ai_core, message.text, session_id, channel="text", language_hint="uz",
+            call_ai_core, message.text, session_id, channel="text", language_hint=user_lang,
         )
 
         tool_calls = ai_data.get("tool_calls_made", [])
@@ -448,6 +451,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Send me a voice or text message. I will transcribe voice and respond using AI.\n\n"
         "Commands:\n"
         "/start - Show this help\n"
+        "/lang - Choose STT language (O\u2019zbek / \u0420\u0443\u0441\u0441\u043a\u0438\u0439)\n"
         "/id - Show your chat ID"
     )
 
@@ -456,6 +460,36 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     await update.message.reply_text(f"Your chat ID: {update.message.chat_id}")
+
+
+async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.message.chat_id
+    current = USER_LANGUAGES.get(chat_id, "uz")
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                f"{'> ' if current == 'uz' else ''}O'zbek", callback_data="lang_uz"
+            ),
+            InlineKeyboardButton(
+                f"{'> ' if current == 'ru' else ''}Русский", callback_data="lang_ru"
+            ),
+        ]
+    ]
+    label = "O\u2019zbek" if current == "uz" else "Русский"
+    await update.message.reply_text(
+        f"Current language: {label}\nChoose STT language:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def lang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    lang_code = query.data.replace("lang_", "")  # "uz" or "ru"
+    chat_id = query.message.chat_id
+    USER_LANGUAGES[chat_id] = lang_code
+    label = "O\u2019zbek" if lang_code == "uz" else "Русский"
+    await query.edit_message_text(f"Language set to: {label}")
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -493,11 +527,12 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             if not chunk_paths:
                 raise ProcessingError("No audio chunks were created.")
 
+            user_lang = USER_LANGUAGES.get(message.chat_id, "")
             transcripts: list[str] = []
             total = len(chunk_paths)
             for idx, chunk_path in enumerate(chunk_paths, start=1):
                 await status_message.edit_text(f"Transcribing chunk {idx}/{total}...")
-                text = await asyncio.to_thread(transcribe_chunk, chunk_path)
+                text = await asyncio.to_thread(transcribe_chunk, chunk_path, user_lang)
                 if text:
                     transcripts.append(text)
 
@@ -517,7 +552,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             try:
                 ai_data = await asyncio.to_thread(
-                    call_ai_core, full_text, session_id, channel="voice", language_hint="uz",
+                    call_ai_core, full_text, session_id, channel="voice", language_hint=user_lang or "uz",
                 )
 
                 tool_calls = ai_data.get("tool_calls_made", [])
@@ -576,6 +611,8 @@ def main() -> None:
     app = build_application()
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("id", show_id))
+    app.add_handler(CommandHandler("lang", lang_command))
+    app.add_handler(CallbackQueryHandler(lang_callback, pattern="^lang_"))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling(allowed_updates=Update.ALL_TYPES)

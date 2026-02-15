@@ -16,7 +16,7 @@ import requests
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, Body
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -53,6 +53,15 @@ RECENT_TRANSCRIPTS: deque[dict] = deque(maxlen=RECENT_LIMIT)
 TRANSCRIPTS_LOCK = threading.Lock()
 CHAT_SESSIONS: dict[int, str] = {}
 USER_LANGUAGES: dict[int, str] = {}  # chat_id -> "uz" or "ru"
+
+# Persistent reply keyboard buttons
+BTN_UZ = "O'zbek \U0001f1fa\U0001f1ff"
+BTN_RU = "\u0420\u0443\u0441\u0441\u043a\u0438\u0439 \U0001f1f7\U0001f1fa"
+LANG_KEYBOARD = ReplyKeyboardMarkup(
+    [[KeyboardButton(BTN_UZ), KeyboardButton(BTN_RU)]],
+    resize_keyboard=True,
+)
+LANG_BUTTON_MAP = {BTN_UZ: "uz", BTN_RU: "ru"}
 
 
 class ProcessingError(RuntimeError):
@@ -449,10 +458,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Send me a voice or text message. I will transcribe voice and respond using AI.\n\n"
+        "Use the buttons below to switch STT language.\n\n"
         "Commands:\n"
         "/start - Show this help\n"
-        "/lang - Choose STT language (O\u2019zbek / \u0420\u0443\u0441\u0441\u043a\u0438\u0439)\n"
-        "/id - Show your chat ID"
+        "/id - Show your chat ID",
+        reply_markup=LANG_KEYBOARD,
     )
 
 
@@ -490,6 +500,17 @@ async def lang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     USER_LANGUAGES[chat_id] = lang_code
     label = "O\u2019zbek" if lang_code == "uz" else "Русский"
     await query.edit_message_text(f"Language set to: {label}")
+
+
+async def handle_lang_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text
+    lang_code = LANG_BUTTON_MAP.get(text)
+    if not lang_code:
+        return
+    chat_id = update.message.chat_id
+    USER_LANGUAGES[chat_id] = lang_code
+    label = "O\u2019zbek \U0001f1fa\U0001f1ff" if lang_code == "uz" else "\u0420\u0443\u0441\u0441\u043a\u0438\u0439 \U0001f1f7\U0001f1fa"
+    await update.message.reply_text(f"\u2705 Language set to: {label}")
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -614,6 +635,8 @@ def main() -> None:
     app.add_handler(CommandHandler("lang", lang_command))
     app.add_handler(CallbackQueryHandler(lang_callback, pattern="^lang_"))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
+    lang_btn_filter = filters.TEXT & filters.Regex(f"^({BTN_UZ}|{BTN_RU})$")
+    app.add_handler(MessageHandler(lang_btn_filter, handle_lang_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

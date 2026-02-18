@@ -75,9 +75,9 @@ def extract_text(payload: object) -> str:
     return str(payload).strip()
 
 
-def transcribe_chunk(chunk_path: Path, language: str = "") -> str:
+def transcribe_chunk(chunk_path: Path, language: str = "auto") -> str:
     headers = {"X-API-Key": ASR_API_KEY} if ASR_API_KEY else {}
-    data = {"language": language} if language else {}
+    data = {"language": language}
     with chunk_path.open("rb") as audio_file:
         response = requests.post(
             ASR_API_URL,

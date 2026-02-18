@@ -225,7 +225,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         except Exception:
             pass
 
-    await asyncio.to_thread(post_webhook, payload)
+    asyncio.create_task(asyncio.to_thread(post_webhook, payload))
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -268,24 +268,30 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 raise ProcessingError("No audio chunks were created.")
 
             user_lang = USER_LANGUAGES.get(message.chat_id, "")
-            transcripts: list[str] = []
             total = len(chunk_paths)
-            for idx, chunk_path in enumerate(chunk_paths, start=1):
-                await status_message.edit_text(
-                    f"Transcribing chunk {idx}/{total}..."
-                )
-                text = await asyncio.to_thread(
-                    transcribe_chunk, chunk_path, user_lang
-                )
-                if text:
-                    transcripts.append(text)
+            await status_message.edit_text(
+                f"Transcribing {total} chunk{'s' if total > 1 else ''}..."
+            )
+
+            sem = asyncio.Semaphore(3)
+
+            async def _transcribe(chunk_path: Path) -> str:
+                async with sem:
+                    return await asyncio.to_thread(
+                        transcribe_chunk, chunk_path, user_lang
+                    )
+
+            results = await asyncio.gather(
+                *[_transcribe(cp) for cp in chunk_paths]
+            )
+            transcripts = [t for t in results if t]
 
             full_text = " ".join(t.strip() for t in transcripts if t).strip()
             if not full_text:
                 full_text = "No text returned by ASR service."
 
             payload = record_transcript(message, full_text)
-            await asyncio.to_thread(post_webhook, payload)
+            asyncio.create_task(asyncio.to_thread(post_webhook, payload))
 
             for part in split_message(f"\U0001f4dd Transcript:\n{full_text}"):
                 await message.reply_text(part)

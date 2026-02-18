@@ -1,17 +1,34 @@
 # Telegram ASR Bot
 
-A Telegram bot that accepts voice/audio messages, converts them to 16 kHz mono WAV, splits audio into 30-second chunks, sends each chunk to your ASR API, and replies with the combined transcription. It also exposes a small HTTP API for the most recent transcripts (no database).
+A Telegram bot that accepts voice/audio messages, converts them to 16 kHz mono WAV, splits audio into 30-second chunks, sends each chunk to your ASR API, and replies with the combined transcription. It also forwards the transcript to an AI Core Engine for intelligent responses. Exposes a small HTTP API for the most recent transcripts (no database).
 
 ## Features
 - Accepts voice notes and audio files
 - Converts to WAV (mono, 16 kHz)
 - Splits into 30-second chunks
+- **Parallel chunk transcription** (up to 3 concurrent ASR requests)
 - Calls ASR API with `X-API-Key` header
-- Auto-detects language (no `language` param needed, API handles it)
-- Replies with the final transcript
+- AI-powered responses via AI Core Engine
+- Language selection: Uzbek / Russian (per-user preference)
 - Optional admin copy of every transcript
 - HTTP API for recent transcripts
-- Optional webhook callback per transcript
+- Optional webhook callback per transcript (fire-and-forget, non-blocking)
+
+## Project Structure
+
+```
+stt-bot/
+├── bot.py          # Entry point — registers handlers, starts API + polling
+├── config.py       # Environment variables, logger, global state, constants
+├── models.py       # Pydantic request models + ProcessingError
+├── api.py          # FastAPI app, routes, AI Core integration
+├── audio.py        # ffmpeg wrappers, ASR transcription
+├── handlers.py     # Telegram command/message handlers + utilities
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── .env.example
+```
 
 ## ASR API Latency Benchmarks
 
@@ -23,7 +40,9 @@ Tested against `185.100.53.247:8211/asr` (synthetic sine-wave audio, 3 runs each
 | 5 seconds     | ~464ms      | 457ms  | 476ms  |
 | 30 seconds    | ~936ms      | 904ms  | 1000ms |
 
-> Benchmarked on 2026-02-13 from local machine. Real-world latency may vary with speech content, network conditions, and server load.
+> Benchmarked on 2026-02-13 from local machine against port 18000. Latency on port 8211 is expected to be similar. Real-world latency may vary with speech content, network conditions, and server load.
+>
+> With parallel transcription (up to 3 concurrent), a 2-minute audio (4 chunks) completes in ~1.9s instead of ~3.7s sequential.
 
 ## Requirements
 - Python
@@ -115,18 +134,23 @@ In Coolify, set your environment variables and deploy the compose file.
 
 ## Configuration
 All settings live in `.env`:
-- `TELEGRAM_BOT_TOKEN`: your bot token
-- `ASR_API_URL`: ASR endpoint (default `http://185.100.53.247:8211/asr`)
-- `ASR_API_KEY`: API key passed in `X-API-Key`
-- `ASR_CHUNK_SECONDS`: chunk length (default 30)
-- `FFMPEG_PATH`: path to `ffmpeg` if not in PATH
-- `ADMIN_CHAT_ID`: your Telegram chat ID for receiving copies of transcripts
-- `API_HOST`: API bind host (default `0.0.0.0`)
-- `API_PORT`: API port inside container (default `8000`)
-- `RECENT_LIMIT`: max number of transcripts in memory
-- `API_ACCESS_KEY`: protect API endpoints using `X-API-Key`
-- `WEBHOOK_URL`: optional webhook endpoint for transcript payloads
-- `WEBHOOK_TIMEOUT`: webhook timeout in seconds
+
+| Variable | Description | Default |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather | (required) |
+| `ASR_API_URL` | ASR endpoint | `http://185.100.53.247:8211/asr` |
+| `ASR_API_KEY` | API key passed in `X-API-Key` | (empty) |
+| `ASR_CHUNK_SECONDS` | Chunk length in seconds | `30` |
+| `FFMPEG_PATH` | Path to `ffmpeg` binary | `ffmpeg` |
+| `ADMIN_CHAT_ID` | Telegram chat ID for admin copies | (empty) |
+| `AI_CORE_URL` | AI Core Engine endpoint | `http://185.100.53.247:8075/chat` |
+| `AI_CORE_TIMEOUT` | AI Core request timeout (seconds) | `30` |
+| `API_HOST` | API bind host | `0.0.0.0` |
+| `API_PORT` | API port inside container | `8000` |
+| `RECENT_LIMIT` | Max transcripts in memory | `100` |
+| `API_ACCESS_KEY` | Protect API endpoints with `X-API-Key` | (empty) |
+| `WEBHOOK_URL` | Webhook endpoint for transcript payloads | (empty) |
+| `WEBHOOK_TIMEOUT` | Webhook timeout in seconds | `10` |
 
 ## Storage
 Audio files are processed in a temporary folder and not saved. Transcripts are stored in memory only.

@@ -12,7 +12,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ASR_API_URL = os.getenv(
     "ASR_API_URL",
-    "http://185.100.53.247:18000/asr",
+    "http://185.100.53.247:8211/asr",
 )
 ASR_API_KEY = os.getenv("ASR_API_KEY", "")
 CHUNK_SECONDS = int(os.getenv("ASR_CHUNK_SECONDS", "30"))

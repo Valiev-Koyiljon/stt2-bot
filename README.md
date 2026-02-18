@@ -15,7 +15,7 @@ A Telegram bot that accepts voice/audio messages, converts them to 16 kHz mono W
 
 ## ASR API Latency Benchmarks
 
-Tested against `185.100.53.247:18000/asr` (synthetic sine-wave audio, 3 runs each):
+Tested against `185.100.53.247:8211/asr` (synthetic sine-wave audio, 3 runs each):
 
 | Audio Duration | Avg Latency | Min    | Max    |
 |---------------|-------------|--------|--------|
@@ -116,7 +116,7 @@ In Coolify, set your environment variables and deploy the compose file.
 ## Configuration
 All settings live in `.env`:
 - `TELEGRAM_BOT_TOKEN`: your bot token
-- `ASR_API_URL`: ASR endpoint (default `http://185.100.53.247:18000/asr`)
+- `ASR_API_URL`: ASR endpoint (default `http://185.100.53.247:8211/asr`)
 - `ASR_API_KEY`: API key passed in `X-API-Key`
 - `ASR_CHUNK_SECONDS`: chunk length (default 30)
 - `FFMPEG_PATH`: path to `ffmpeg` if not in PATH

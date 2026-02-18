@@ -9,7 +9,7 @@ A Telegram bot that accepts voice/audio messages, converts them to 16 kHz mono W
 - **Parallel chunk transcription** (up to 3 concurrent ASR requests)
 - Calls ASR API with `X-API-Key` header
 - AI-powered responses via AI Core Engine
-- Language selection: Uzbek / Russian (per-user preference)
+- **Automatic language detection** from voice (no manual selection needed)
 - Optional admin copy of every transcript
 - HTTP API for recent transcripts
 - Optional webhook callback per transcript (fire-and-forget, non-blocking)
@@ -94,10 +94,13 @@ python bot.py
 ```
 
 ## Usage
-Send a voice note or audio file to the bot. It will reply with the transcription.
+Send a voice note or audio file to the bot. It will automatically detect the language, transcribe the audio, and reply with an AI-powered response.
 
-To get your chat ID, send `/id` to the bot. If you set `ADMIN_CHAT_ID` in `.env`,
-the bot will send every transcript to you as well as the user.
+Commands:
+- `/start` — Show help
+- `/id` — Show your chat ID
+
+If you set `ADMIN_CHAT_ID` in `.env`, the bot will send every transcript to the admin as well.
 
 ## API
 The API keeps a small in-memory list of the most recent transcripts. Data is lost on restart.

@@ -4,7 +4,6 @@ import threading
 from collections import deque
 
 from dotenv import load_dotenv
-from telegram import KeyboardButton, ReplyKeyboardMarkup
 
 load_dotenv()
 
@@ -39,13 +38,3 @@ LOGGER = logging.getLogger("telegram-asr-bot")
 RECENT_TRANSCRIPTS: deque[dict] = deque(maxlen=RECENT_LIMIT)
 TRANSCRIPTS_LOCK = threading.Lock()
 CHAT_SESSIONS: dict[int, str] = {}
-USER_LANGUAGES: dict[int, str] = {}  # chat_id -> "uz" or "ru"
-
-# --- Language Keyboard ---
-BTN_UZ = "O'zbek \U0001f1fa\U0001f1ff"
-BTN_RU = "\u0420\u0443\u0441\u0441\u043a\u0438\u0439 \U0001f1f7\U0001f1fa"
-LANG_KEYBOARD = ReplyKeyboardMarkup(
-    [[KeyboardButton(BTN_UZ), KeyboardButton(BTN_RU)]],
-    resize_keyboard=True,
-)
-LANG_BUTTON_MAP = {BTN_UZ: "uz", BTN_RU: "ru"}

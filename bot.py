@@ -6,20 +6,16 @@ import uvicorn
 from telegram import Update
 from telegram.ext import (
     Application,
-    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
 )
 
-from config import API_HOST, API_PORT, BTN_UZ, BTN_RU, LOGGER, TELEGRAM_BOT_TOKEN
+from config import API_HOST, API_PORT, LOGGER, TELEGRAM_BOT_TOKEN
 from api import api_app
 from handlers import (
     handle_audio,
-    handle_lang_button,
     handle_text,
-    lang_callback,
-    lang_command,
     show_id,
     start,
 )
@@ -47,15 +43,11 @@ def main() -> None:
     app = build_application()
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("id", show_id))
-    app.add_handler(CommandHandler("lang", lang_command))
-    app.add_handler(CallbackQueryHandler(lang_callback, pattern="^lang_"))
     app.add_handler(
         MessageHandler(
             filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio
         )
     )
-    lang_btn_filter = filters.TEXT & filters.Regex(f"^({BTN_UZ}|{BTN_RU})$")
-    app.add_handler(MessageHandler(lang_btn_filter, handle_lang_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

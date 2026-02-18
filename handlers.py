@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterable
 
 import requests
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
@@ -14,13 +14,8 @@ from config import (
     CHUNK_SECONDS,
     LOGGER,
     TELEGRAM_BOT_TOKEN,
-    USER_LANGUAGES,
     WEBHOOK_URL,
     WEBHOOK_TIMEOUT,
-    BTN_UZ,
-    BTN_RU,
-    LANG_KEYBOARD,
-    LANG_BUTTON_MAP,
 )
 from models import ProcessingError
 from api import call_ai_core, format_ai_response, get_session_id, store_message
@@ -94,11 +89,10 @@ def post_webhook(payload: dict) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Send me a voice or text message. I will transcribe voice and respond using AI.\n\n"
-        "Use the buttons below to switch STT language.\n\n"
+        "Language is detected automatically from your voice.\n\n"
         "Commands:\n"
         "/start - Show this help\n"
         "/id - Show your chat ID",
-        reply_markup=LANG_KEYBOARD,
     )
 
 
@@ -106,55 +100,6 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     await update.message.reply_text(f"Your chat ID: {update.message.chat_id}")
-
-
-async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.message.chat_id
-    current = USER_LANGUAGES.get(chat_id, "uz")
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                f"{'> ' if current == 'uz' else ''}O'zbek",
-                callback_data="lang_uz",
-            ),
-            InlineKeyboardButton(
-                f"{'> ' if current == 'ru' else ''}\u0420\u0443\u0441\u0441\u043a\u0438\u0439",
-                callback_data="lang_ru",
-            ),
-        ]
-    ]
-    label = "O\u2019zbek" if current == "uz" else "\u0420\u0443\u0441\u0441\u043a\u0438\u0439"
-    await update.message.reply_text(
-        f"Current language: {label}\nChoose STT language:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-
-async def lang_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    lang_code = query.data.replace("lang_", "")  # "uz" or "ru"
-    chat_id = query.message.chat_id
-    USER_LANGUAGES[chat_id] = lang_code
-    label = "O\u2019zbek" if lang_code == "uz" else "\u0420\u0443\u0441\u0441\u043a\u0438\u0439"
-    await query.edit_message_text(f"Language set to: {label}")
-
-
-async def handle_lang_button(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    text = update.message.text
-    lang_code = LANG_BUTTON_MAP.get(text)
-    if not lang_code:
-        return
-    chat_id = update.message.chat_id
-    USER_LANGUAGES[chat_id] = lang_code
-    label = (
-        "O\u2019zbek \U0001f1fa\U0001f1ff"
-        if lang_code == "uz"
-        else "\u0420\u0443\u0441\u0441\u043a\u0438\u0439 \U0001f1f7\U0001f1fa"
-    )
-    await update.message.reply_text(f"\u2705 Language set to: {label}")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -179,13 +124,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     status_message = await message.reply_text("\U0001f914 Thinking...")
 
     try:
-        user_lang = USER_LANGUAGES.get(message.chat_id, "uz")
         ai_data = await asyncio.to_thread(
             call_ai_core,
             message.text,
             session_id,
             channel="text",
-            language_hint=user_lang,
+            language_hint="auto",
         )
 
         tool_calls = ai_data.get("tool_calls_made", [])
@@ -267,7 +211,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             if not chunk_paths:
                 raise ProcessingError("No audio chunks were created.")
 
-            user_lang = USER_LANGUAGES.get(message.chat_id, "")
             total = len(chunk_paths)
             await status_message.edit_text(
                 f"Transcribing {total} chunk{'s' if total > 1 else ''}..."
@@ -278,7 +221,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             async def _transcribe(chunk_path: Path) -> str:
                 async with sem:
                     return await asyncio.to_thread(
-                        transcribe_chunk, chunk_path, user_lang
+                        transcribe_chunk, chunk_path
                     )
 
             results = await asyncio.gather(
@@ -306,7 +249,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     full_text,
                     session_id,
                     channel="voice",
-                    language_hint=user_lang or "uz",
+                    language_hint="auto",
                 )
 
                 tool_calls = ai_data.get("tool_calls_made", [])

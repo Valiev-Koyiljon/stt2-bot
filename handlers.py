@@ -88,11 +88,12 @@ def post_webhook(payload: dict) -> None:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Send me a voice or text message. I will transcribe voice and respond using AI.\n\n"
-        "Language is detected automatically from your voice.\n\n"
-        "Commands:\n"
-        "/start - Show this help\n"
-        "/id - Show your chat ID",
+        "Welcome! I'm an AI-powered voice assistant.\n\n"
+        "What I can do:\n"
+        "\u2022 Voice/audio messages \u2014 I transcribe your speech and respond with AI\n"
+        "\u2022 Text messages \u2014 I respond directly with AI\n\n"
+        "Language is detected automatically \u2014 just speak naturally.\n\n"
+        "/id \u2014 Show your chat ID",
     )
 
 

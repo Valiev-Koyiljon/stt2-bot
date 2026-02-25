@@ -13,6 +13,8 @@ from config import (
     ADMIN_CHAT_ID,
     CHUNK_SECONDS,
     LOGGER,
+    STORAGE_API_KEY,
+    STORAGE_API_URL,
     TELEGRAM_BOT_TOKEN,
     WEBHOOK_URL,
     WEBHOOK_TIMEOUT,
@@ -81,6 +83,39 @@ def post_webhook(payload: dict) -> None:
         response.raise_for_status()
     except Exception:
         LOGGER.exception("Webhook delivery failed")
+
+
+def upload_to_storage(
+    audio_data: bytes,
+    filename: str,
+    transcript: str,
+    user_id: str,
+    username: str,
+    chat_id: str,
+    message_id: str,
+    session_id: str,
+) -> None:
+    if not STORAGE_API_URL:
+        return
+    try:
+        resp = requests.post(
+            f"{STORAGE_API_URL}/upload",
+            files={"audio": (filename, audio_data)},
+            data={
+                "transcript": transcript,
+                "user_id": str(user_id),
+                "username": username or "",
+                "chat_id": str(chat_id),
+                "message_id": str(message_id),
+                "session_id": session_id,
+            },
+            headers={"X-API-Key": STORAGE_API_KEY} if STORAGE_API_KEY else {},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        LOGGER.info("Voice uploaded to storage: %s", resp.json().get("path"))
+    except Exception:
+        LOGGER.exception("Storage upload failed")
 
 
 # --- Telegram Handlers ---
@@ -237,11 +272,26 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             payload = record_transcript(message, full_text)
             asyncio.create_task(asyncio.to_thread(post_webhook, payload))
 
+            session_id = get_session_id(message.chat_id)
+            audio_data = input_path.read_bytes()
+            asyncio.create_task(
+                asyncio.to_thread(
+                    upload_to_storage,
+                    audio_data,
+                    input_path.name,
+                    full_text,
+                    str(message.from_user.id),
+                    message.from_user.username or "",
+                    str(message.chat_id),
+                    str(message.message_id),
+                    session_id,
+                )
+            )
+
             for part in split_message(f"\U0001f4dd Transcript:\n{full_text}"):
                 await message.reply_text(part)
 
             # Call AI Core Engine with the transcribed text
-            session_id = get_session_id(message.chat_id)
             await status_message.edit_text("\U0001f914 Thinking...")
 
             try:

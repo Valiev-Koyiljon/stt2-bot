@@ -27,6 +27,9 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 WEBHOOK_TIMEOUT = float(os.getenv("WEBHOOK_TIMEOUT", "10"))
 API_ACCESS_KEY = os.getenv("API_ACCESS_KEY", "").strip()
 
+STORAGE_API_URL = os.getenv("STORAGE_API_URL", "").strip()
+STORAGE_API_KEY = os.getenv("STORAGE_API_KEY", "").strip()
+
 # --- Logging ---
 logging.basicConfig(
     level=logging.INFO,

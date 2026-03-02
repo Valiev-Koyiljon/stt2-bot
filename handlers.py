@@ -21,7 +21,7 @@ from config import (
     WEBHOOK_TIMEOUT,
 )
 from models import ProcessingError
-from api import call_ai_core, describe_image, format_ai_response, get_session_id, store_message
+from api import call_ai_core, format_ai_response, get_session_id, store_message
 from audio import convert_to_wav, split_wav, transcribe_chunk
 
 
@@ -145,84 +145,56 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     session_id = get_session_id(message.chat_id)
-    caption = message.caption
+    text = message.caption or "Describe this image"
 
     await message.chat.send_action(ChatAction.TYPING)
-    status_message = await message.reply_text("\U0001f4f7 Analyzing image...")
+    status_message = await message.reply_text("\U0001f4f7 Processing image...")
 
     try:
-        # Step 1: Download highest-resolution photo
+        # Download highest-resolution photo
         photo = message.photo[-1]
         tg_file = await photo.get_file()
         photo_bytes = await tg_file.download_as_bytearray()
         image_b64 = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
 
-        # Step 2: Describe image via LiteLLM directly (no system prompt)
-        await status_message.edit_text("\U0001f50d Describing image...")
-        description = await asyncio.to_thread(describe_image, image_b64)
+        await status_message.edit_text("\U0001f914 Thinking...")
 
-        # Step 3: Show description to user (like voice transcript)
-        for part in split_message(f"\U0001f4f7 Image description:\n{description}"):
+        ai_data = await asyncio.to_thread(
+            call_ai_core,
+            text,
+            session_id,
+            channel="text",
+            language_hint="auto",
+            images=[image_b64],
+        )
+
+        tool_calls = ai_data.get("tool_calls_made", [])
+        if tool_calls:
+            await status_message.edit_text(
+                f"\U0001f527 Using tools: {', '.join(tool_calls)}"
+            )
+            await asyncio.sleep(0.5)
+
+        reply_text = format_ai_response(ai_data)
+        for part in split_message(reply_text):
             await message.reply_text(part)
-
-        # Step 4: If caption provided, send caption + description to AI Core
-        if caption:
-            await status_message.edit_text("\U0001f914 Thinking...")
-
-            ai_text = f"[Image description: {description}]\n\nUser question: {caption}"
-
-            try:
-                ai_data = await asyncio.to_thread(
-                    call_ai_core,
-                    ai_text,
-                    session_id,
-                    channel="text",
-                    language_hint="auto",
-                )
-
-                tool_calls = ai_data.get("tool_calls_made", [])
-                if tool_calls:
-                    await status_message.edit_text(
-                        f"\U0001f527 Using tools: {', '.join(tool_calls)}"
-                    )
-                    await asyncio.sleep(0.5)
-
-                reply_text = format_ai_response(ai_data)
-                for part in split_message(reply_text):
-                    await message.reply_text(part)
-                    if ADMIN_CHAT_ID and str(message.chat_id) != ADMIN_CHAT_ID:
-                        await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=part)
-
-            except requests.ConnectionError:
-                LOGGER.exception("AI Core Engine connection failed")
-                await message.reply_text(
-                    "\u26a0\ufe0f AI service unavailable. Image description was saved."
-                )
-            except requests.Timeout:
-                LOGGER.exception("AI Core Engine timed out")
-                await message.reply_text(
-                    "\u26a0\ufe0f AI service timed out. Image description was saved."
-                )
-            except Exception as exc:
-                LOGGER.exception("AI Core processing failed")
-                await message.reply_text(
-                    f"\u26a0\ufe0f AI processing failed: {exc}. Image description was saved."
-                )
+            if ADMIN_CHAT_ID and str(message.chat_id) != ADMIN_CHAT_ID:
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=part)
 
     except requests.ConnectionError:
-        LOGGER.exception("LiteLLM connection failed")
+        LOGGER.exception("AI Core Engine connection failed")
         await message.reply_text(
-            "\u26a0\ufe0f Image analysis service is currently unavailable. Please try again later."
+            "\u26a0\ufe0f AI service is currently unavailable. Please try again later."
         )
     except requests.Timeout:
-        LOGGER.exception("LiteLLM timed out")
+        LOGGER.exception("AI Core Engine timed out")
         await message.reply_text(
-            "\u26a0\ufe0f Image analysis timed out. Please try again."
+            "\u26a0\ufe0f AI service timed out. Please try again."
         )
     except requests.HTTPError as exc:
-        LOGGER.exception("LiteLLM HTTP error")
+        LOGGER.exception("AI Core Engine HTTP error")
         await message.reply_text(
-            f"\u26a0\ufe0f Image analysis error: {exc.response.status_code}"
+            f"\u26a0\ufe0f AI service error: {exc.response.status_code}"
         )
     except Exception as exc:
         LOGGER.exception("Error processing photo")

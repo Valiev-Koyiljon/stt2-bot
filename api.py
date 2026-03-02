@@ -9,6 +9,9 @@ from config import (
     AI_CORE_URL,
     AI_CORE_TIMEOUT,
     CHAT_SESSIONS,
+    LITELLM_API_KEY,
+    LITELLM_BASE_URL,
+    LITELLM_MULTIMODAL_MODEL,
     LOGGER,
     RECENT_TRANSCRIPTS,
     TRANSCRIPTS_LOCK,
@@ -75,6 +78,38 @@ def store_message(
     with TRANSCRIPTS_LOCK:
         RECENT_TRANSCRIPTS.append(payload)
     return payload
+
+
+def describe_image(image_b64: str, prompt: str = "Describe this image in detail.") -> str:
+    """Call LiteLLM multimodal model directly to describe an image."""
+    payload = {
+        "model": LITELLM_MULTIMODAL_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 1024,
+    }
+    LOGGER.info("Image description request: model=%s", LITELLM_MULTIMODAL_MODEL)
+    response = requests.post(
+        f"{LITELLM_BASE_URL}/chat/completions",
+        json=payload,
+        headers={"Authorization": f"Bearer {LITELLM_API_KEY}"},
+        timeout=AI_CORE_TIMEOUT,
+    )
+    response.raise_for_status()
+    data = response.json()
+    description = data["choices"][0]["message"]["content"].strip()
+    LOGGER.info("Image description: %s", description[:100])
+    return description
 
 
 def call_ai_core(

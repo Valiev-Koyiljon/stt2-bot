@@ -15,6 +15,7 @@ from config import API_HOST, API_PORT, LOGGER, TELEGRAM_BOT_TOKEN
 from api import api_app
 from handlers import (
     handle_audio,
+    handle_photo,
     handle_text,
     show_id,
     start,
@@ -48,6 +49,7 @@ def main() -> None:
             filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio
         )
     )
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

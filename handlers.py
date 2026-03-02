@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -136,6 +137,73 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
     await update.message.reply_text(f"Your chat ID: {update.message.chat_id}")
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if not message or not message.photo:
+        return
+
+    session_id = get_session_id(message.chat_id)
+    text = message.caption or "Describe this image"
+
+    await message.chat.send_action(ChatAction.TYPING)
+    status_message = await message.reply_text("\U0001f4f7 Processing image...")
+
+    try:
+        # Download highest-resolution photo
+        photo = message.photo[-1]
+        tg_file = await photo.get_file()
+        photo_bytes = await tg_file.download_as_bytearray()
+        image_b64 = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
+
+        await status_message.edit_text("\U0001f914 Thinking...")
+
+        ai_data = await asyncio.to_thread(
+            call_ai_core,
+            text,
+            session_id,
+            channel="text",
+            language_hint="auto",
+            images=[image_b64],
+        )
+
+        tool_calls = ai_data.get("tool_calls_made", [])
+        if tool_calls:
+            await status_message.edit_text(
+                f"\U0001f527 Using tools: {', '.join(tool_calls)}"
+            )
+            await asyncio.sleep(0.5)
+
+        reply_text = format_ai_response(ai_data)
+        for part in split_message(reply_text):
+            await message.reply_text(part)
+            if ADMIN_CHAT_ID and str(message.chat_id) != ADMIN_CHAT_ID:
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=part)
+
+    except requests.ConnectionError:
+        LOGGER.exception("AI Core Engine connection failed")
+        await message.reply_text(
+            "\u26a0\ufe0f AI service is currently unavailable. Please try again later."
+        )
+    except requests.Timeout:
+        LOGGER.exception("AI Core Engine timed out")
+        await message.reply_text(
+            "\u26a0\ufe0f AI service timed out. Please try again."
+        )
+    except requests.HTTPError as exc:
+        LOGGER.exception("AI Core Engine HTTP error")
+        await message.reply_text(
+            f"\u26a0\ufe0f AI service error: {exc.response.status_code}"
+        )
+    except Exception as exc:
+        LOGGER.exception("Error processing photo")
+        await message.reply_text(f"\u26a0\ufe0f Processing failed: {exc}")
+    finally:
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

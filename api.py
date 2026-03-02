@@ -78,7 +78,8 @@ def store_message(
 
 
 def call_ai_core(
-    message: str, session_id: str, channel: str = "text", language_hint: str = "uz"
+    message: str, session_id: str, channel: str = "text", language_hint: str = "uz",
+    images: Optional[list[str]] = None,
 ) -> dict:
     payload = {
         "message": message,
@@ -89,6 +90,8 @@ def call_ai_core(
             "language_hint": language_hint,
         },
     }
+    if images:
+        payload["images"] = images
     LOGGER.info(
         "AI Core request: session=%s, channel=%s, msg=%s",
         session_id,

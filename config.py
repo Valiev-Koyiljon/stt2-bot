@@ -57,3 +57,6 @@ RECENT_TRANSCRIPTS: deque[dict] = deque(maxlen=RECENT_LIMIT)
 TRANSCRIPTS_LOCK = threading.Lock()
 CHAT_SESSIONS: dict[int, str] = {}
 CHAT_AGENTS: dict[int, str] = {}
+AUTHENTICATED_CHATS: set[int] = set()
+
+BOT_PASSWORD = os.getenv("BOT_PASSWORD", "").strip()

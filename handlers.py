@@ -17,6 +17,8 @@ from telegram.ext import ContextTypes
 from config import (
     ADMIN_CHAT_ID,
     AGENTS,
+    AUTHENTICATED_CHATS,
+    BOT_PASSWORD,
     CHAT_AGENTS,
     CHUNK_SECONDS,
     DEFAULT_AGENT,
@@ -132,10 +134,25 @@ def upload_to_storage(
         LOGGER.exception("Storage upload failed")
 
 
+# --- Auth ---
+
+
+def _is_authenticated(chat_id: int) -> bool:
+    if not BOT_PASSWORD:
+        return True
+    return chat_id in AUTHENTICATED_CHATS
+
+
+async def _ask_password(message) -> None:
+    await message.reply_text("Please enter the password to use this bot.")
+
+
 # --- Telegram Handlers ---
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authenticated(update.message.chat_id):
+        return await _ask_password(update.message)
     await update.message.reply_text(
         "Welcome! I'm an AI-powered voice assistant.\n\n"
         "What I can do:\n"
@@ -162,6 +179,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = update.message
     if not message or not message.photo:
         return
+    if not _is_authenticated(message.chat_id):
+        return await _ask_password(message)
 
     session_id = get_session_id(message.chat_id)
     text = message.caption or "Describe this image"
@@ -232,6 +251,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     text_stripped = message.text.strip()
+
+    if not _is_authenticated(message.chat_id):
+        if BOT_PASSWORD and text_stripped == BOT_PASSWORD:
+            AUTHENTICATED_CHATS.add(message.chat_id)
+            LOGGER.info("Chat %s authenticated", message.chat_id)
+            await message.reply_text(
+                "Access granted! You can now use the bot.",
+                reply_markup=AGENT_KEYBOARD,
+            )
+            return
+        return await _ask_password(message)
+
     if text_stripped in _AGENT_NAME_TO_ID:
         agent_id = _AGENT_NAME_TO_ID[text_stripped]
         CHAT_AGENTS[message.chat_id] = agent_id
@@ -312,6 +343,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = update.message
     if not message:
         return
+    if not _is_authenticated(message.chat_id):
+        return await _ask_password(message)
 
     attachment = pick_attachment(update)
     if not attachment:

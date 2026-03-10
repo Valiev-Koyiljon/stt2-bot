@@ -7,19 +7,12 @@ from typing import Iterable
 
 import requests
 from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
     Update,
 )
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
-
-MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [[KeyboardButton("Agents")]],
-    resize_keyboard=True,
-)
 
 from config import (
     ADMIN_CHAT_ID,
@@ -34,6 +27,12 @@ from config import (
     WEBHOOK_URL,
     WEBHOOK_TIMEOUT,
 )
+
+AGENT_KEYBOARD = ReplyKeyboardMarkup(
+    [[KeyboardButton(name) for _, name in AGENTS]],
+    resize_keyboard=True,
+)
+_AGENT_NAME_TO_ID = {name: agent_id for agent_id, name in AGENTS}
 from models import ProcessingError
 from api import call_ai_core, format_ai_response, get_session_id, store_message
 from audio import convert_to_wav, split_wav, transcribe_chunk
@@ -144,7 +143,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "\u2022 Text messages \u2014 I respond directly with AI\n\n"
         "Language is detected automatically \u2014 just speak naturally.\n\n"
         "/id \u2014 Show your chat ID",
-        reply_markup=MAIN_KEYBOARD,
+        reply_markup=AGENT_KEYBOARD,
     )
 
 
@@ -157,32 +156,6 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def _get_agent(chat_id: int) -> str:
     return CHAT_AGENTS.get(chat_id, DEFAULT_AGENT)
 
-
-async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message:
-        return
-    current = _get_agent(update.message.chat_id)
-    buttons = []
-    for agent_id, agent_name in AGENTS:
-        label = f"{'> ' if agent_id == current else ''}{agent_name}"
-        buttons.append(
-            [InlineKeyboardButton(label, callback_data=f"agent:{agent_id}")]
-        )
-    await update.message.reply_text(
-        "Select an agent:", reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-
-async def agent_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    if not query or not query.data or not query.data.startswith("agent:"):
-        return
-    await query.answer()
-    agent_id = query.data.split(":", 1)[1]
-    agent_name = next((n for a, n in AGENTS if a == agent_id), agent_id)
-    CHAT_AGENTS[query.message.chat_id] = agent_id
-    LOGGER.info("Chat %s switched to agent: %s", query.message.chat_id, agent_id)
-    await query.edit_message_text(f"Agent switched to: {agent_name}")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -258,8 +231,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not message or not message.text:
         return
 
-    if message.text.strip() == "Agents":
-        return await agent_command(update, context)
+    text_stripped = message.text.strip()
+    if text_stripped in _AGENT_NAME_TO_ID:
+        agent_id = _AGENT_NAME_TO_ID[text_stripped]
+        CHAT_AGENTS[message.chat_id] = agent_id
+        LOGGER.info("Chat %s switched to agent: %s", message.chat_id, agent_id)
+        await message.reply_text(
+            f"Agent switched to: {text_stripped}",
+            reply_markup=AGENT_KEYBOARD,
+        )
+        return
 
     session_id = get_session_id(message.chat_id)
 

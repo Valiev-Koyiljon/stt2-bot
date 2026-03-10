@@ -79,7 +79,7 @@ def store_message(
 
 def call_ai_core(
     message: str, session_id: str, channel: str = "text", language_hint: str = "uz",
-    images: Optional[list[str]] = None,
+    images: Optional[list[str]] = None, agent: str = "",
 ) -> dict:
     payload = {
         "message": message,
@@ -88,6 +88,7 @@ def call_ai_core(
             "msisdn": None,
             "channel": channel,
             "language_hint": language_hint,
+            "agent": agent,
         },
     }
     if images:

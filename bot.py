@@ -6,6 +6,7 @@ import uvicorn
 from telegram import Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
@@ -14,6 +15,8 @@ from telegram.ext import (
 from config import API_HOST, API_PORT, LOGGER, TELEGRAM_BOT_TOKEN
 from api import api_app
 from handlers import (
+    agent_callback,
+    agent_command,
     handle_audio,
     handle_photo,
     handle_text,
@@ -44,6 +47,8 @@ def main() -> None:
     app = build_application()
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("id", show_id))
+    app.add_handler(CommandHandler("agent", agent_command))
+    app.add_handler(CallbackQueryHandler(agent_callback, pattern=r"^agent:"))
     app.add_handler(
         MessageHandler(
             filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio

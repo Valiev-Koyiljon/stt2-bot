@@ -6,9 +6,20 @@ from pathlib import Path
 from typing import Iterable
 
 import requests
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [[KeyboardButton("Agents")]],
+    resize_keyboard=True,
+)
 
 from config import (
     ADMIN_CHAT_ID,
@@ -132,8 +143,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "\u2022 Voice/audio messages \u2014 I transcribe your speech and respond with AI\n"
         "\u2022 Text messages \u2014 I respond directly with AI\n\n"
         "Language is detected automatically \u2014 just speak naturally.\n\n"
-        "/agent \u2014 Choose an AI agent\n"
         "/id \u2014 Show your chat ID",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -246,6 +257,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = update.message
     if not message or not message.text:
         return
+
+    if message.text.strip() == "Agents":
+        return await agent_command(update, context)
 
     session_id = get_session_id(message.chat_id)
 

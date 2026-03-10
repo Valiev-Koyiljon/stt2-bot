@@ -47,7 +47,7 @@ def main() -> None:
     app = build_application()
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("id", show_id))
-    app.add_handler(CommandHandler("agent", agent_command))
+    app.add_handler(CommandHandler("agents", agent_command))
     app.add_handler(CallbackQueryHandler(agent_callback, pattern=r"^agent:"))
     app.add_handler(
         MessageHandler(

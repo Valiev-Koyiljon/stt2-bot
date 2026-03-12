@@ -1,6 +1,7 @@
 import json
+import queue as thread_queue
 from datetime import datetime, timezone
-from typing import Generator, Optional, Union
+from typing import Optional, Union
 
 import requests
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
@@ -112,13 +113,18 @@ def call_ai_core(
     return data
 
 
+_STREAM_DONE = None  # sentinel for end of stream
+
+
 def call_ai_core_stream(
     message: str, session_id: str, channel: str = "text", language_hint: str = "uz",
     images: Optional[list[str]] = None, agent: str = "",
-) -> Generator[str, None, dict | None]:
-    """Try streaming from AI Core via SSE. Yields text chunks.
-    Falls back to non-streaming if AI Core doesn't support it.
-    Returns the full response dict at the end (via StopIteration.value).
+    chunk_queue: thread_queue.Queue | None = None,
+) -> dict:
+    """Call AI Core with streaming. Puts text chunks into chunk_queue as they arrive.
+    Returns the full response dict. If AI Core doesn't support SSE, falls back
+    to non-streaming and puts the entire text as a single chunk.
+    Always puts _STREAM_DONE sentinel when finished (success or failure).
     """
     payload = {
         "message": message,
@@ -133,10 +139,16 @@ def call_ai_core_stream(
     }
     if images:
         payload["images"] = images
+
+    def _put(chunk: str | None):
+        if chunk_queue is not None:
+            chunk_queue.put(chunk)
+
     LOGGER.info(
         "AI Core stream request: session=%s, channel=%s, msg=%s",
         session_id, channel, message[:100],
     )
+
     try:
         response = requests.post(
             AI_CORE_URL, json=payload, timeout=AI_CORE_TIMEOUT,
@@ -145,6 +157,7 @@ def call_ai_core_stream(
         response.raise_for_status()
         content_type = response.headers.get("content-type", "")
 
+        # --- Path A: AI Core supports SSE ---
         if "text/event-stream" in content_type:
             full_text = ""
             final_data = None
@@ -160,36 +173,35 @@ def call_ai_core_stream(
                         token = chunk.get("token", chunk.get("text", ""))
                         if token:
                             full_text += token
-                            yield token
+                            _put(token)
                         if chunk.get("done"):
                             final_data = chunk
                             break
                     except json.JSONDecodeError:
                         full_text += data_str
-                        yield data_str
+                        _put(data_str)
+            _put(_STREAM_DONE)
             if final_data is None:
                 final_data = {"response": {"text": full_text}}
             LOGGER.info("AI Core stream complete: %d chars", len(full_text))
             return final_data
 
-        # Not SSE — fallback to reading full JSON response
+        # --- Path B: AI Core returned plain JSON (no streaming support) ---
         data = response.json()
         text = data.get("response", {}).get("text", "")
         if text:
-            yield text
+            _put(text)
+        _put(_STREAM_DONE)
         LOGGER.info(
-            "AI Core response (non-stream): model=%s, latency=%sms",
+            "AI Core response (non-stream fallback): model=%s, latency=%sms",
             data.get("model_used", "?"), data.get("latency_ms", "?"),
         )
         return data
 
     except Exception:
-        LOGGER.exception("AI Core stream failed, falling back to non-stream")
-        data = call_ai_core(message, session_id, channel, language_hint, images, agent)
-        text = data.get("response", {}).get("text", "")
-        if text:
-            yield text
-        return data
+        LOGGER.exception("AI Core stream request failed")
+        _put(_STREAM_DONE)
+        raise
 
 
 def format_ai_response(ai_data: dict) -> str:

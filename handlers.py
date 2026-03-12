@@ -1,6 +1,8 @@
 import asyncio
 import base64
+import queue as thread_queue
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -14,6 +16,14 @@ from telegram import (
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
+from api import (
+    _STREAM_DONE,
+    call_ai_core_stream,
+    format_ai_response,
+    get_session_id,
+    store_message,
+)
+from audio import convert_to_wav, split_wav, transcribe_chunk
 from config import (
     ADMIN_CHAT_ID,
     AGENTS,
@@ -29,15 +39,13 @@ from config import (
     WEBHOOK_URL,
     WEBHOOK_TIMEOUT,
 )
+from models import ProcessingError
 
 AGENT_KEYBOARD = ReplyKeyboardMarkup(
     [[KeyboardButton(name) for _, name in AGENTS]],
     resize_keyboard=True,
 )
 _AGENT_NAME_TO_ID = {name: agent_id for agent_id, name in AGENTS}
-from models import ProcessingError
-from api import call_ai_core, call_ai_core_stream, format_ai_response, get_session_id, store_message
-from audio import convert_to_wav, split_wav, transcribe_chunk
 
 
 # --- Utilities ---
@@ -136,53 +144,70 @@ def upload_to_storage(
 
 # --- Streaming ---
 
-_DRAFT_INTERVAL = 0.4  # seconds between draft updates
+_DRAFT_INTERVAL_S = 0.4  # minimum seconds between sendMessageDraft calls
 
 
 async def stream_ai_response(
     bot, chat_id: int, text: str, session_id: str,
     channel: str = "text", language_hint: str = "auto",
     images=None, agent: str = "",
-) -> dict | None:
-    """Stream AI response via sendMessageDraft. Falls back if not supported."""
-    queue: asyncio.Queue = asyncio.Queue()
-    final_data_holder: list = [None]
+) -> dict:
+    """Stream AI response to Telegram via sendMessageDraft.
 
-    def _producer():
-        gen = call_ai_core_stream(
-            text, session_id, channel, language_hint, images, agent,
+    - Runs the HTTP streaming call in a background thread.
+    - Consumes text chunks from a thread-safe queue.
+    - Sends drafts at a throttled interval so the user sees live typing.
+    - Falls back gracefully if sendMessageDraft is unavailable or
+      if AI Core doesn't support SSE streaming.
+    - Always returns the full AI Core response dict.
+    """
+    q: thread_queue.Queue = thread_queue.Queue()
+
+    # Check once whether the bot object supports drafts
+    has_draft = hasattr(bot, "send_message_draft")
+
+    # Producer: runs in thread, puts chunks into thread-safe queue
+    async def _produce():
+        return await asyncio.to_thread(
+            call_ai_core_stream,
+            text, session_id, channel, language_hint, images, agent, q,
         )
-        try:
-            while True:
-                chunk = next(gen)
-                queue.put_nowait(chunk)
-        except StopIteration as e:
-            final_data_holder[0] = e.value
-        queue.put_nowait(None)  # sentinel
 
-    producer = asyncio.to_thread(_producer)
-    asyncio.create_task(producer)
+    # Consumer: reads from queue, sends drafts to Telegram
+    async def _consume():
+        accumulated = ""
+        last_draft_t = 0.0
+        draft_ok = has_draft
 
-    accumulated = ""
-    use_draft = True
-    last_draft = 0
-
-    while True:
-        chunk = await queue.get()
-        if chunk is None:
-            break
-        accumulated += chunk
-
-        now = asyncio.get_event_loop().time()
-        if use_draft and (now - last_draft) >= _DRAFT_INTERVAL:
+        while True:
             try:
-                await bot.send_message_draft(chat_id=chat_id, text=accumulated)
-                last_draft = now
+                chunk = await asyncio.to_thread(q.get, timeout=1.0)
             except Exception:
-                use_draft = False
-                LOGGER.debug("send_message_draft unavailable, skipping drafts")
+                # queue.Empty — producer hasn't put anything yet, keep waiting
+                continue
 
-    return final_data_holder[0]
+            if chunk is _STREAM_DONE:
+                break
+
+            accumulated += chunk
+
+            if not draft_ok:
+                continue
+
+            now = time.monotonic()
+            if (now - last_draft_t) >= _DRAFT_INTERVAL_S:
+                try:
+                    await bot.send_message_draft(chat_id=chat_id, text=accumulated)
+                    last_draft_t = now
+                except Exception:
+                    draft_ok = False
+                    LOGGER.info("send_message_draft not available, drafts disabled")
+
+        return accumulated
+
+    # Run producer and consumer concurrently
+    (ai_data, _accumulated) = await asyncio.gather(_produce(), _consume())
+    return ai_data
 
 
 # --- Auth ---

@@ -153,18 +153,14 @@ async def stream_ai_response(
     images=None, agent: str = "",
     status_message=None,
 ) -> dict:
-    """Stream AI response to Telegram via sendMessageDraft + live status updates.
+    """Stream AI response to Telegram via live status message edits.
 
     - Runs the HTTP streaming call in a background thread.
     - Consumes structured event dicts from a thread-safe queue.
-    - Updates status_message with processing stages (tool use, etc.).
-    - Sends text drafts at a throttled interval so the user sees live typing.
+    - Updates status_message with processing stages and streaming text.
     - Always returns the full AI Core response dict.
     """
     q: thread_queue.Queue = thread_queue.Queue()
-
-    # Check once whether the bot object supports drafts
-    has_draft = hasattr(bot, "send_message_draft")
 
     # Producer: runs in thread, puts structured dicts into queue
     async def _produce():
@@ -185,8 +181,7 @@ async def stream_ai_response(
     # Consumer: reads structured events from queue
     async def _consume():
         accumulated = ""
-        last_draft_t = 0.0
-        draft_ok = has_draft
+        last_edit_t = 0.0
 
         while True:
             try:
@@ -219,15 +214,10 @@ async def stream_ai_response(
                     token = item.get("content", "")
                     if token:
                         accumulated += token
-                        if draft_ok:
-                            now = time.monotonic()
-                            if (now - last_draft_t) >= _DRAFT_INTERVAL_S:
-                                try:
-                                    await bot.send_message_draft(chat_id=chat_id, text=accumulated)
-                                    last_draft_t = now
-                                except Exception:
-                                    draft_ok = False
-                                    LOGGER.info("send_message_draft not available, drafts disabled")
+                        now = time.monotonic()
+                        if (now - last_edit_t) >= _DRAFT_INTERVAL_S:
+                            await _update_status(f"\u270d\ufe0f {accumulated}")
+                            last_edit_t = now
 
                 elif evt_type in ("done", "error"):
                     break

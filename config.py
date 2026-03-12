@@ -18,6 +18,7 @@ CHUNK_SECONDS = int(os.getenv("ASR_CHUNK_SECONDS", "30"))
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
 AI_CORE_URL = os.getenv("AI_CORE_URL", "http://185.100.53.247:8075/chat")
+AI_CORE_STREAM_URL = os.getenv("AI_CORE_STREAM_URL", f"{AI_CORE_URL}/stream")
 AI_CORE_TIMEOUT = int(os.getenv("AI_CORE_TIMEOUT", "30"))
 
 API_HOST = os.getenv("API_HOST", "0.0.0.0")

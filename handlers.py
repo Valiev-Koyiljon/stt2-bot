@@ -151,14 +151,14 @@ async def stream_ai_response(
     bot, chat_id: int, text: str, session_id: str,
     channel: str = "text", language_hint: str = "auto",
     images=None, agent: str = "",
+    status_message=None,
 ) -> dict:
-    """Stream AI response to Telegram via sendMessageDraft.
+    """Stream AI response to Telegram via sendMessageDraft + live status updates.
 
     - Runs the HTTP streaming call in a background thread.
-    - Consumes text chunks from a thread-safe queue.
-    - Sends drafts at a throttled interval so the user sees live typing.
-    - Falls back gracefully if sendMessageDraft is unavailable or
-      if AI Core doesn't support SSE streaming.
+    - Consumes structured event dicts from a thread-safe queue.
+    - Updates status_message with processing stages (tool use, etc.).
+    - Sends text drafts at a throttled interval so the user sees live typing.
     - Always returns the full AI Core response dict.
     """
     q: thread_queue.Queue = thread_queue.Queue()
@@ -166,14 +166,23 @@ async def stream_ai_response(
     # Check once whether the bot object supports drafts
     has_draft = hasattr(bot, "send_message_draft")
 
-    # Producer: runs in thread, puts chunks into thread-safe queue
+    # Producer: runs in thread, puts structured dicts into queue
     async def _produce():
         return await asyncio.to_thread(
             call_ai_core_stream,
             text, session_id, channel, language_hint, images, agent, q,
         )
 
-    # Consumer: reads from queue, sends drafts to Telegram
+    # Helper to safely edit the status message
+    async def _update_status(new_text: str):
+        if not status_message:
+            return
+        try:
+            await status_message.edit_text(new_text)
+        except Exception:
+            LOGGER.debug("status_message.edit_text failed (rate limit or deleted)")
+
+    # Consumer: reads structured events from queue
     async def _consume():
         accumulated = ""
         last_draft_t = 0.0
@@ -181,27 +190,51 @@ async def stream_ai_response(
 
         while True:
             try:
-                chunk = await asyncio.to_thread(q.get, timeout=1.0)
+                item = await asyncio.to_thread(q.get, timeout=1.0)
             except Exception:
-                # queue.Empty — producer hasn't put anything yet, keep waiting
                 continue
 
-            if chunk is _STREAM_DONE:
+            if item is _STREAM_DONE:
                 break
 
-            accumulated += chunk
+            # Structured dict dispatch
+            if isinstance(item, dict):
+                evt_type = item.get("type")
 
-            if not draft_ok:
-                continue
+                if evt_type == "status":
+                    await _update_status(f"\u2699\ufe0f {item.get('message', 'Processing...')}")
 
-            now = time.monotonic()
-            if (now - last_draft_t) >= _DRAFT_INTERVAL_S:
-                try:
-                    await bot.send_message_draft(chat_id=chat_id, text=accumulated)
-                    last_draft_t = now
-                except Exception:
-                    draft_ok = False
-                    LOGGER.info("send_message_draft not available, drafts disabled")
+                elif evt_type == "tool_start":
+                    desc = item.get("description") or item.get("tool", "")
+                    await _update_status(f"\U0001f527 {desc}...")
+
+                elif evt_type == "tool_done":
+                    tool = item.get("tool", "")
+                    if item.get("success", True):
+                        await _update_status(f"\u2705 {tool} done, generating response...")
+                    else:
+                        await _update_status(f"\u26a0\ufe0f {tool} failed, continuing...")
+
+                elif evt_type == "delta":
+                    token = item.get("content", "")
+                    if token:
+                        accumulated += token
+                        if draft_ok:
+                            now = time.monotonic()
+                            if (now - last_draft_t) >= _DRAFT_INTERVAL_S:
+                                try:
+                                    await bot.send_message_draft(chat_id=chat_id, text=accumulated)
+                                    last_draft_t = now
+                                except Exception:
+                                    draft_ok = False
+                                    LOGGER.info("send_message_draft not available, drafts disabled")
+
+                elif evt_type in ("done", "error"):
+                    break
+
+            else:
+                # Plain string fallback (defensive)
+                accumulated += str(item)
 
         return accumulated
 
@@ -279,6 +312,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             channel="text", language_hint="auto",
             images=[image_b64],
             agent=_get_agent(message.chat_id),
+            status_message=status_message,
         )
         ai_data = ai_data or {}
 
@@ -348,6 +382,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             message.text, session_id,
             channel="text", language_hint="auto",
             agent=_get_agent(message.chat_id),
+            status_message=status_message,
         )
         ai_data = ai_data or {}
 
@@ -463,6 +498,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     full_text, session_id,
                     channel="voice", language_hint="auto",
                     agent=_get_agent(message.chat_id),
+                    status_message=status_message,
                 )
                 ai_data = ai_data or {}
 

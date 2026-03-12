@@ -9,6 +9,7 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from config import (
     API_ACCESS_KEY,
     AI_CORE_URL,
+    AI_CORE_STREAM_URL,
     AI_CORE_TIMEOUT,
     CHAT_SESSIONS,
     LOGGER,
@@ -121,10 +122,19 @@ def call_ai_core_stream(
     images: Optional[list[str]] = None, agent: str = "",
     chunk_queue: thread_queue.Queue | None = None,
 ) -> dict:
-    """Call AI Core with streaming. Puts text chunks into chunk_queue as they arrive.
-    Returns the full response dict. If AI Core doesn't support SSE, falls back
-    to non-streaming and puts the entire text as a single chunk.
-    Always puts _STREAM_DONE sentinel when finished (success or failure).
+    """Call AI Core /chat/stream with SSE. Puts structured dicts into chunk_queue.
+
+    Queue items are dicts with a "type" key:
+        {"type": "status",     "message": "..."}
+        {"type": "tool_start", "tool": "...", "description": "..."}
+        {"type": "tool_done",  "tool": "...", "success": bool}
+        {"type": "delta",      "content": "text token"}
+        {"type": "done",       "data": {...}}
+        {"type": "error",      "message": "..."}
+
+    Falls back gracefully if AI Core doesn't send event: lines (old format)
+    or returns plain JSON (no SSE at all).
+    Always puts _STREAM_DONE sentinel when finished.
     """
     payload = {
         "message": message,
@@ -140,9 +150,9 @@ def call_ai_core_stream(
     if images:
         payload["images"] = images
 
-    def _put(chunk: str | None):
+    def _put(item):
         if chunk_queue is not None:
-            chunk_queue.put(chunk)
+            chunk_queue.put(item)
 
     LOGGER.info(
         "AI Core stream request: session=%s, channel=%s, msg=%s",
@@ -151,46 +161,100 @@ def call_ai_core_stream(
 
     try:
         response = requests.post(
-            AI_CORE_URL, json=payload, timeout=AI_CORE_TIMEOUT,
+            AI_CORE_STREAM_URL, json=payload, timeout=AI_CORE_TIMEOUT,
             stream=True, headers={"Accept": "text/event-stream"},
         )
         response.raise_for_status()
         content_type = response.headers.get("content-type", "")
 
-        # --- Path A: AI Core supports SSE ---
+        # --- Path A: SSE stream ---
         if "text/event-stream" in content_type:
             full_text = ""
             final_data = None
+            current_event = None  # tracks the last "event:" field
+
             for line in response.iter_lines(decode_unicode=True):
-                if not line:
+                if line is None:
                     continue
-                if line.startswith("data: "):
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
+
+                # Blank line = end of SSE block, reset event type
+                if not line:
+                    current_event = None
+                    continue
+
+                # Track event: field
+                if line.startswith("event:"):
+                    current_event = line[6:].strip()
+                    continue
+
+                if not line.startswith("data:"):
+                    continue
+
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+
+                # --- New format: event: type present ---
+                if current_event:
                     try:
                         chunk = json.loads(data_str)
-                        token = chunk.get("token", chunk.get("text", ""))
+                    except json.JSONDecodeError:
+                        continue
+
+                    if current_event == "status":
+                        _put({"type": "status", "message": chunk.get("message", "")})
+                    elif current_event == "tool_start":
+                        _put({"type": "tool_start", "tool": chunk.get("tool", ""), "description": chunk.get("description", "")})
+                    elif current_event == "tool_done":
+                        _put({"type": "tool_done", "tool": chunk.get("tool", ""), "success": chunk.get("success", True)})
+                    elif current_event == "delta":
+                        token = chunk.get("content", "")
                         if token:
                             full_text += token
-                            _put(token)
-                        if chunk.get("done"):
-                            final_data = chunk
-                            break
-                    except json.JSONDecodeError:
-                        full_text += data_str
-                        _put(data_str)
+                            _put({"type": "delta", "content": token})
+                    elif current_event == "done":
+                        final_data = chunk
+                        break
+                    elif current_event == "error":
+                        _put({"type": "error", "message": chunk.get("message", "Unknown error")})
+                        break
+                    continue
+
+                # --- Legacy fallback: no event: line ---
+                try:
+                    chunk = json.loads(data_str)
+                    token = chunk.get("token", chunk.get("text", ""))
+                    if token:
+                        full_text += token
+                        _put({"type": "delta", "content": token})
+                    if chunk.get("done"):
+                        final_data = chunk
+                        break
+                except json.JSONDecodeError:
+                    full_text += data_str
+                    _put({"type": "delta", "content": data_str})
+
             _put(_STREAM_DONE)
-            if final_data is None:
+
+            # Normalize final_data so format_ai_response works
+            if final_data and "text" in final_data and "response" not in final_data:
+                final_data = {
+                    "response": {"text": final_data["text"]},
+                    "tool_calls_made": final_data.get("tool_calls", []),
+                    "latency_ms": final_data.get("latency_ms"),
+                    "model_used": final_data.get("model_used", ""),
+                }
+            elif final_data is None:
                 final_data = {"response": {"text": full_text}}
+
             LOGGER.info("AI Core stream complete: %d chars", len(full_text))
             return final_data
 
-        # --- Path B: AI Core returned plain JSON (no streaming support) ---
+        # --- Path B: Plain JSON (no SSE) ---
         data = response.json()
         text = data.get("response", {}).get("text", "")
         if text:
-            _put(text)
+            _put({"type": "delta", "content": text})
         _put(_STREAM_DONE)
         LOGGER.info(
             "AI Core response (non-stream fallback): model=%s, latency=%sms",

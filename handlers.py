@@ -36,7 +36,7 @@ AGENT_KEYBOARD = ReplyKeyboardMarkup(
 )
 _AGENT_NAME_TO_ID = {name: agent_id for agent_id, name in AGENTS}
 from models import ProcessingError
-from api import call_ai_core, format_ai_response, get_session_id, store_message
+from api import call_ai_core, call_ai_core_stream, format_ai_response, get_session_id, store_message
 from audio import convert_to_wav, split_wav, transcribe_chunk
 
 
@@ -134,6 +134,57 @@ def upload_to_storage(
         LOGGER.exception("Storage upload failed")
 
 
+# --- Streaming ---
+
+_DRAFT_INTERVAL = 0.4  # seconds between draft updates
+
+
+async def stream_ai_response(
+    bot, chat_id: int, text: str, session_id: str,
+    channel: str = "text", language_hint: str = "auto",
+    images=None, agent: str = "",
+) -> dict | None:
+    """Stream AI response via sendMessageDraft. Falls back if not supported."""
+    queue: asyncio.Queue = asyncio.Queue()
+    final_data_holder: list = [None]
+
+    def _producer():
+        gen = call_ai_core_stream(
+            text, session_id, channel, language_hint, images, agent,
+        )
+        try:
+            while True:
+                chunk = next(gen)
+                queue.put_nowait(chunk)
+        except StopIteration as e:
+            final_data_holder[0] = e.value
+        queue.put_nowait(None)  # sentinel
+
+    producer = asyncio.to_thread(_producer)
+    asyncio.create_task(producer)
+
+    accumulated = ""
+    use_draft = True
+    last_draft = 0
+
+    while True:
+        chunk = await queue.get()
+        if chunk is None:
+            break
+        accumulated += chunk
+
+        now = asyncio.get_event_loop().time()
+        if use_draft and (now - last_draft) >= _DRAFT_INTERVAL:
+            try:
+                await bot.send_message_draft(chat_id=chat_id, text=accumulated)
+                last_draft = now
+            except Exception:
+                use_draft = False
+                LOGGER.debug("send_message_draft unavailable, skipping drafts")
+
+    return final_data_holder[0]
+
+
 # --- Auth ---
 
 
@@ -197,22 +248,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         await status_message.edit_text("\U0001f914 Thinking...")
 
-        ai_data = await asyncio.to_thread(
-            call_ai_core,
-            text,
-            session_id,
-            channel="text",
-            language_hint="auto",
+        ai_data = await stream_ai_response(
+            context.bot, message.chat_id,
+            text, session_id,
+            channel="text", language_hint="auto",
             images=[image_b64],
             agent=_get_agent(message.chat_id),
         )
-
-        tool_calls = ai_data.get("tool_calls_made", [])
-        if tool_calls:
-            await status_message.edit_text(
-                f"\U0001f527 Using tools: {', '.join(tool_calls)}"
-            )
-            await asyncio.sleep(0.5)
+        ai_data = ai_data or {}
 
         reply_text = format_ai_response(ai_data)
         for part in split_message(reply_text):
@@ -220,21 +263,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             if ADMIN_CHAT_ID and str(message.chat_id) != ADMIN_CHAT_ID:
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=part)
 
-    except requests.ConnectionError:
-        LOGGER.exception("AI Core Engine connection failed")
-        await message.reply_text(
-            "\u26a0\ufe0f AI service is currently unavailable. Please try again later."
-        )
-    except requests.Timeout:
-        LOGGER.exception("AI Core Engine timed out")
-        await message.reply_text(
-            "\u26a0\ufe0f AI service timed out. Please try again."
-        )
-    except requests.HTTPError as exc:
-        LOGGER.exception("AI Core Engine HTTP error")
-        await message.reply_text(
-            f"\u26a0\ufe0f AI service error: {exc.response.status_code}"
-        )
     except Exception as exc:
         LOGGER.exception("Error processing photo")
         await message.reply_text(f"\u26a0\ufe0f Processing failed: {exc}")
@@ -290,21 +318,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     status_message = await message.reply_text("\U0001f914 Thinking...")
 
     try:
-        ai_data = await asyncio.to_thread(
-            call_ai_core,
-            message.text,
-            session_id,
-            channel="text",
-            language_hint="auto",
+        ai_data = await stream_ai_response(
+            context.bot, message.chat_id,
+            message.text, session_id,
+            channel="text", language_hint="auto",
             agent=_get_agent(message.chat_id),
         )
-
-        tool_calls = ai_data.get("tool_calls_made", [])
-        if tool_calls:
-            await status_message.edit_text(
-                f"\U0001f527 Using tools: {', '.join(tool_calls)}"
-            )
-            await asyncio.sleep(0.5)
+        ai_data = ai_data or {}
 
         reply_text = format_ai_response(ai_data)
         for part in split_message(reply_text):
@@ -312,23 +332,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             if ADMIN_CHAT_ID and str(message.chat_id) != ADMIN_CHAT_ID:
                 await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=part)
 
-    except requests.ConnectionError:
-        LOGGER.exception("AI Core Engine connection failed")
-        await message.reply_text(
-            "\u26a0\ufe0f AI service is currently unavailable. Please try again later."
-        )
-    except requests.Timeout:
-        LOGGER.exception("AI Core Engine timed out")
-        await message.reply_text(
-            "\u26a0\ufe0f AI service timed out. Please try again."
-        )
-    except requests.HTTPError as exc:
-        LOGGER.exception("AI Core Engine HTTP error")
-        await message.reply_text(
-            f"\u26a0\ufe0f AI service error: {exc.response.status_code}"
-        )
     except Exception as exc:
-        LOGGER.exception("Error calling AI Core Engine")
+        LOGGER.exception("AI processing failed")
         await message.reply_text(f"\u26a0\ufe0f Processing failed: {exc}")
     finally:
         try:
@@ -428,21 +433,13 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await status_message.edit_text("\U0001f914 Thinking...")
 
             try:
-                ai_data = await asyncio.to_thread(
-                    call_ai_core,
-                    full_text,
-                    session_id,
-                    channel="voice",
-                    language_hint="auto",
+                ai_data = await stream_ai_response(
+                    context.bot, message.chat_id,
+                    full_text, session_id,
+                    channel="voice", language_hint="auto",
                     agent=_get_agent(message.chat_id),
                 )
-
-                tool_calls = ai_data.get("tool_calls_made", [])
-                if tool_calls:
-                    await status_message.edit_text(
-                        f"\U0001f527 Using tools: {', '.join(tool_calls)}"
-                    )
-                    await asyncio.sleep(0.5)
+                ai_data = ai_data or {}
 
                 reply_text = format_ai_response(ai_data)
                 for part in split_message(reply_text):
@@ -452,16 +449,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                             chat_id=ADMIN_CHAT_ID, text=part
                         )
 
-            except requests.ConnectionError:
-                LOGGER.exception("AI Core Engine connection failed")
-                await message.reply_text(
-                    "\u26a0\ufe0f AI service unavailable. Transcript was saved."
-                )
-            except requests.Timeout:
-                LOGGER.exception("AI Core Engine timed out")
-                await message.reply_text(
-                    "\u26a0\ufe0f AI service timed out. Transcript was saved."
-                )
             except Exception as exc:
                 LOGGER.exception("AI Core processing failed")
                 await message.reply_text(

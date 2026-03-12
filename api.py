@@ -1,5 +1,6 @@
+import json
 from datetime import datetime, timezone
-from typing import Optional, Union
+from typing import Generator, Optional, Union
 
 import requests
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
@@ -109,6 +110,86 @@ def call_ai_core(
         data.get("tool_calls_made", []),
     )
     return data
+
+
+def call_ai_core_stream(
+    message: str, session_id: str, channel: str = "text", language_hint: str = "uz",
+    images: Optional[list[str]] = None, agent: str = "",
+) -> Generator[str, None, dict | None]:
+    """Try streaming from AI Core via SSE. Yields text chunks.
+    Falls back to non-streaming if AI Core doesn't support it.
+    Returns the full response dict at the end (via StopIteration.value).
+    """
+    payload = {
+        "message": message,
+        "session_id": session_id,
+        "stream": True,
+        "context": {
+            "msisdn": None,
+            "channel": channel,
+            "language_hint": language_hint,
+            "agent": agent,
+        },
+    }
+    if images:
+        payload["images"] = images
+    LOGGER.info(
+        "AI Core stream request: session=%s, channel=%s, msg=%s",
+        session_id, channel, message[:100],
+    )
+    try:
+        response = requests.post(
+            AI_CORE_URL, json=payload, timeout=AI_CORE_TIMEOUT,
+            stream=True, headers={"Accept": "text/event-stream"},
+        )
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "")
+
+        if "text/event-stream" in content_type:
+            full_text = ""
+            final_data = None
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        token = chunk.get("token", chunk.get("text", ""))
+                        if token:
+                            full_text += token
+                            yield token
+                        if chunk.get("done"):
+                            final_data = chunk
+                            break
+                    except json.JSONDecodeError:
+                        full_text += data_str
+                        yield data_str
+            if final_data is None:
+                final_data = {"response": {"text": full_text}}
+            LOGGER.info("AI Core stream complete: %d chars", len(full_text))
+            return final_data
+
+        # Not SSE — fallback to reading full JSON response
+        data = response.json()
+        text = data.get("response", {}).get("text", "")
+        if text:
+            yield text
+        LOGGER.info(
+            "AI Core response (non-stream): model=%s, latency=%sms",
+            data.get("model_used", "?"), data.get("latency_ms", "?"),
+        )
+        return data
+
+    except Exception:
+        LOGGER.exception("AI Core stream failed, falling back to non-stream")
+        data = call_ai_core(message, session_id, channel, language_hint, images, agent)
+        text = data.get("response", {}).get("text", "")
+        if text:
+            yield text
+        return data
 
 
 def format_ai_response(ai_data: dict) -> str:

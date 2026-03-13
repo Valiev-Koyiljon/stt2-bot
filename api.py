@@ -8,12 +8,13 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Request
 
 from config import (
     API_ACCESS_KEY,
+    AI_CORE_URL,
+    AI_CORE_STREAM_URL,
     AI_CORE_TIMEOUT,
     CHAT_SESSIONS,
     LOGGER,
     RECENT_TRANSCRIPTS,
     TRANSCRIPTS_LOCK,
-    get_agent_urls,
 )
 from models import ConversationRequest, ContextData, InputData, LegacyRequest
 
@@ -100,8 +101,7 @@ def call_ai_core(
         channel,
         message[:100],
     )
-    chat_url, _ = get_agent_urls(agent)
-    response = requests.post(chat_url, json=payload, timeout=AI_CORE_TIMEOUT)
+    response = requests.post(AI_CORE_URL, json=payload, timeout=AI_CORE_TIMEOUT)
     response.raise_for_status()
     data = response.json()
     LOGGER.info(
@@ -158,9 +158,8 @@ def call_ai_core_stream(
     )
 
     try:
-        _, stream_url = get_agent_urls(agent)
         response = requests.post(
-            stream_url, json=payload, timeout=AI_CORE_TIMEOUT,
+            AI_CORE_STREAM_URL, json=payload, timeout=AI_CORE_TIMEOUT,
             stream=True, headers={"Accept": "text/event-stream"},
         )
         response.raise_for_status()

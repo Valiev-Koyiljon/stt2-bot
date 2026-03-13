@@ -8,13 +8,12 @@ from fastapi import Body, Depends, FastAPI, HTTPException, Request
 
 from config import (
     API_ACCESS_KEY,
-    AI_CORE_URL,
-    AI_CORE_STREAM_URL,
     AI_CORE_TIMEOUT,
     CHAT_SESSIONS,
     LOGGER,
     RECENT_TRANSCRIPTS,
     TRANSCRIPTS_LOCK,
+    get_agent_urls,
 )
 from models import ConversationRequest, ContextData, InputData, LegacyRequest
 
@@ -82,7 +81,7 @@ def store_message(
 
 def call_ai_core(
     message: str, session_id: str, channel: str = "text", language_hint: str = "uz",
-    images: Optional[list[str]] = None, agent: str = "",
+    images: Optional[list[str]] = None,
 ) -> dict:
     payload = {
         "message": message,
@@ -91,7 +90,6 @@ def call_ai_core(
             "msisdn": None,
             "channel": channel,
             "language_hint": language_hint,
-            "agent": agent,
         },
     }
     if images:
@@ -102,7 +100,8 @@ def call_ai_core(
         channel,
         message[:100],
     )
-    response = requests.post(AI_CORE_URL, json=payload, timeout=AI_CORE_TIMEOUT)
+    chat_url, _ = get_agent_urls(agent)
+    response = requests.post(chat_url, json=payload, timeout=AI_CORE_TIMEOUT)
     response.raise_for_status()
     data = response.json()
     LOGGER.info(
@@ -119,7 +118,7 @@ _STREAM_DONE = None  # sentinel for end of stream
 
 def call_ai_core_stream(
     message: str, session_id: str, channel: str = "text", language_hint: str = "uz",
-    images: Optional[list[str]] = None, agent: str = "",
+    images: Optional[list[str]] = None,
     chunk_queue: thread_queue.Queue | None = None,
 ) -> dict:
     """Call AI Core /chat/stream with SSE. Puts structured dicts into chunk_queue.
@@ -144,7 +143,6 @@ def call_ai_core_stream(
             "msisdn": None,
             "channel": channel,
             "language_hint": language_hint,
-            "agent": agent,
         },
     }
     if images:
@@ -160,8 +158,9 @@ def call_ai_core_stream(
     )
 
     try:
+        _, stream_url = get_agent_urls(agent)
         response = requests.post(
-            AI_CORE_STREAM_URL, json=payload, timeout=AI_CORE_TIMEOUT,
+            stream_url, json=payload, timeout=AI_CORE_TIMEOUT,
             stream=True, headers={"Accept": "text/event-stream"},
         )
         response.raise_for_status()

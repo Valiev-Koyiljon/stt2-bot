@@ -8,11 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 import requests
-from telegram import (
-    KeyboardButton,
-    ReplyKeyboardMarkup,
-    Update,
-)
+from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
@@ -26,12 +22,9 @@ from api import (
 from audio import convert_to_wav, split_wav, transcribe_chunk
 from config import (
     ADMIN_CHAT_ID,
-    AGENTS,
     AUTHENTICATED_CHATS,
     BOT_PASSWORD,
-    CHAT_AGENTS,
     CHUNK_SECONDS,
-    DEFAULT_AGENT,
     LOGGER,
     STORAGE_API_KEY,
     STORAGE_API_URL,
@@ -40,12 +33,6 @@ from config import (
     WEBHOOK_TIMEOUT,
 )
 from models import ProcessingError
-
-AGENT_KEYBOARD = ReplyKeyboardMarkup(
-    [[KeyboardButton(name) for _, name in AGENTS]],
-    resize_keyboard=True,
-)
-_AGENT_NAME_TO_ID = {name: agent_id for agent_id, name in AGENTS}
 
 
 # --- Utilities ---
@@ -150,8 +137,7 @@ _DRAFT_INTERVAL_S = 0.4  # minimum seconds between sendMessageDraft calls
 async def stream_ai_response(
     bot, chat_id: int, text: str, session_id: str,
     channel: str = "text", language_hint: str = "auto",
-    images=None, agent: str = "",
-    status_message=None,
+    images=None, status_message=None,
 ) -> dict:
     """Stream AI response to Telegram via live status message edits.
 
@@ -166,7 +152,7 @@ async def stream_ai_response(
     async def _produce():
         return await asyncio.to_thread(
             call_ai_core_stream,
-            text, session_id, channel, language_hint, images, agent, q,
+            text, session_id, channel, language_hint, images, q,
         )
 
     # Helper to safely edit the status message
@@ -259,7 +245,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "\u2022 Text messages \u2014 I respond directly with AI\n\n"
         "Language is detected automatically \u2014 just speak naturally.\n\n"
         "/id \u2014 Show your chat ID",
-        reply_markup=AGENT_KEYBOARD,
     )
 
 
@@ -268,9 +253,6 @@ async def show_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(f"Your chat ID: {update.message.chat_id}")
 
-
-def _get_agent(chat_id: int) -> str:
-    return CHAT_AGENTS.get(chat_id, DEFAULT_AGENT)
 
 
 
@@ -301,7 +283,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             text, session_id,
             channel="text", language_hint="auto",
             images=[image_b64],
-            agent=_get_agent(message.chat_id),
             status_message=status_message,
         )
         ai_data = ai_data or {}
@@ -333,22 +314,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if BOT_PASSWORD and text_stripped == BOT_PASSWORD:
             AUTHENTICATED_CHATS.add(message.chat_id)
             LOGGER.info("Chat %s authenticated", message.chat_id)
-            await message.reply_text(
-                "Access granted! You can now use the bot.",
-                reply_markup=AGENT_KEYBOARD,
-            )
+            await message.reply_text("Access granted! You can now use the bot.")
             return
         return await _ask_password(message)
-
-    if text_stripped in _AGENT_NAME_TO_ID:
-        agent_id = _AGENT_NAME_TO_ID[text_stripped]
-        CHAT_AGENTS[message.chat_id] = agent_id
-        LOGGER.info("Chat %s switched to agent: %s", message.chat_id, agent_id)
-        await message.reply_text(
-            f"Agent switched to: {text_stripped}",
-            reply_markup=AGENT_KEYBOARD,
-        )
-        return
 
     session_id = get_session_id(message.chat_id)
 
@@ -371,7 +339,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             context.bot, message.chat_id,
             message.text, session_id,
             channel="text", language_hint="auto",
-            agent=_get_agent(message.chat_id),
             status_message=status_message,
         )
         ai_data = ai_data or {}
@@ -487,8 +454,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     context.bot, message.chat_id,
                     full_text, session_id,
                     channel="voice", language_hint="auto",
-                    agent=_get_agent(message.chat_id),
-                    status_message=status_message,
+                            status_message=status_message,
                 )
                 ai_data = ai_data or {}
 

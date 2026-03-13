@@ -31,21 +31,6 @@ API_ACCESS_KEY = os.getenv("API_ACCESS_KEY", "").strip()
 STORAGE_API_URL = os.getenv("STORAGE_API_URL", "").strip()
 STORAGE_API_KEY = os.getenv("STORAGE_API_KEY", "").strip()
 
-# --- Agents ---
-def _parse_agents(raw: str) -> list[tuple[str, str]]:
-    """Parse 'id:Name,id:Name' into [(id, name), ...]."""
-    agents = []
-    for entry in raw.split(","):
-        entry = entry.strip()
-        if ":" in entry:
-            agent_id, name = entry.split(":", 1)
-            agents.append((agent_id.strip(), name.strip()))
-    return agents
-
-_agents_raw = os.getenv("AGENTS", "default:Default").strip()
-AGENTS: list[tuple[str, str]] = _parse_agents(_agents_raw)
-DEFAULT_AGENT: str = AGENTS[0][0] if AGENTS else "default"
-
 # --- Logging ---
 logging.basicConfig(
     level=logging.INFO,
@@ -57,7 +42,6 @@ LOGGER = logging.getLogger("telegram-asr-bot")
 RECENT_TRANSCRIPTS: deque[dict] = deque(maxlen=RECENT_LIMIT)
 TRANSCRIPTS_LOCK = threading.Lock()
 CHAT_SESSIONS: dict[int, str] = {}
-CHAT_AGENTS: dict[int, str] = {}
 AUTHENTICATED_CHATS: set[int] = set()
 
 BOT_PASSWORD = os.getenv("BOT_PASSWORD", "").strip()

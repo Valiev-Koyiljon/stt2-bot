@@ -1,9 +1,10 @@
 version: "3.8"
 
 services:
-  stt-bot:
+  stt2-bot:
     build: .
-    container_name: stt-bot
+    container_name: stt2-bot
+    env_file: .env
     ports:
       - "7000:8000"
     restart: unless-stopped

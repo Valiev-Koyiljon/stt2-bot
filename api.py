@@ -88,7 +88,7 @@ def call_ai_core(
         "message": message,
         "session_id": session_id,
         "context": {
-            "msisdn": None,
+            "msisdn": session_id,
             "channel": channel,
             "language_hint": language_hint,
         },
@@ -140,7 +140,7 @@ def call_ai_core_stream(
         "session_id": session_id,
         "stream": True,
         "context": {
-            "msisdn": None,
+            "msisdn": session_id,
             "channel": channel,
             "language_hint": language_hint,
         },

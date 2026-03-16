@@ -14,6 +14,7 @@ from telegram.ext import ContextTypes
 
 from api import (
     _STREAM_DONE,
+    call_ai_core,
     call_ai_core_stream,
     format_ai_response,
     get_session_id,
@@ -148,12 +149,27 @@ async def stream_ai_response(
     """
     q: thread_queue.Queue = thread_queue.Queue()
 
-    # Producer: runs in thread, puts structured dicts into queue
+    # Producer: try streaming, fall back to non-streaming if empty
     async def _produce():
-        return await asyncio.to_thread(
-            call_ai_core_stream,
-            text, session_id, channel, language_hint, images, q,
-        )
+        try:
+            result = await asyncio.to_thread(
+                call_ai_core_stream,
+                text, session_id, channel, language_hint, images, q,
+            )
+        except Exception:
+            LOGGER.warning("Streaming failed, falling back to /chat")
+            q.put(_STREAM_DONE)
+            return await asyncio.to_thread(
+                call_ai_core, text, session_id, channel, language_hint, images,
+            )
+        # If stream returned empty text, retry with non-streaming
+        resp_text = result.get("response", {}).get("text", "").strip()
+        if not resp_text:
+            LOGGER.warning("Stream returned empty, falling back to /chat")
+            return await asyncio.to_thread(
+                call_ai_core, text, session_id, channel, language_hint, images,
+            )
+        return result
 
     # Helper to safely edit the status message
     async def _update_status(new_text: str):
